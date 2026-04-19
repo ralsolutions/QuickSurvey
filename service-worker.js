@@ -1,6 +1,6 @@
 // Quick Survey service worker
 // Bump CACHE_VERSION whenever you deploy a new index.html to force refresh
-const CACHE_VERSION = 'v8.1';
+const CACHE_VERSION = 'v8.2';
 const CACHE_NAME = 'quicksurvey-' + CACHE_VERSION;
 
 // Files to pre-cache on install
