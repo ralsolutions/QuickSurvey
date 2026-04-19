@@ -1,1 +1,1904 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="theme-color" content="#111827"/>
+<title>Quick Survey — RAL</title>
+
+<!-- PWA manifest & icons -->
+<link rel="manifest" href="manifest.json"/>
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png"/>
+<link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png"/>
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-title" content="Quick Survey"/>
+<meta name="application-name" content="Quick Survey"/>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{font-family:'Barlow',sans-serif;background:#e4e7ec;color:#111827;height:100%;overflow:hidden;overscroll-behavior:none;}
+body{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);}
+#root{height:100%;}
+input,textarea,select{font-size:16px;}
+button{touch-action:manipulation;}
+::-webkit-scrollbar{width:3px;height:3px;}
+::-webkit-scrollbar-track{background:#d1d5db;}
+::-webkit-scrollbar-thumb{background:#1e3a5f;border-radius:2px;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useRef,useEffect,useCallback,useMemo,memo}=React;
+
+const SKEY_USER='ral-qs-user-v7';
+const APP_VERSION='v8';
+
+// Debounce utility for persistence
+function useDebouncedCallback(fn,delay){
+  const fnRef=useRef(fn);
+  const timerRef=useRef(null);
+  useEffect(()=>{fnRef.current=fn;},[fn]);
+  const call=useCallback((...args)=>{
+    if(timerRef.current)clearTimeout(timerRef.current);
+    timerRef.current=setTimeout(()=>{fnRef.current(...args);timerRef.current=null;},delay);
+  },[delay]);
+  const flush=useCallback((...args)=>{
+    if(timerRef.current){clearTimeout(timerRef.current);timerRef.current=null;}
+    fnRef.current(...args);
+  },[]);
+  useEffect(()=>()=>{if(timerRef.current)clearTimeout(timerRef.current);},[]);
+  return[call,flush];
+}
+
+const C={
+  bg:'#e4e7ec',surface:'#f5f6f8',card:'#ffffff',
+  navyDark:'#111827',navyMid:'#1e3a5f',
+  blue:'#2563eb',blueDim:'#2563eb12',blueBorder:'#2563eb40',
+  border:'#dde1e7',borderDark:'#c4c9d4',
+  text:'#111827',textDim:'#4b5563',textMuted:'#9ca3af',
+  torepair:'#3b82f6',fixing:'#8b5cf6',done:'#22c55e',
+  declined:'#dc2626',
+  greyPin:'#9ca3af',
+};
+
+function useIsMobile(bp=900){
+  const [m,setM]=useState(typeof window!=='undefined'?window.innerWidth<bp:false);
+  useEffect(()=>{const h=()=>setM(window.innerWidth<bp);window.addEventListener('resize',h);return()=>window.removeEventListener('resize',h);},[bp]);
+  return m;
+}
+
+const ST={TOREPAIR:'torepair',FIXING:'fixing',DONE:'done'};
+const SC={torepair:C.torepair,fixing:C.fixing,done:C.done};
+const SL={torepair:'To Repair',fixing:'Fixing',done:'Done'};
+
+const ROLES=[
+  {id:'admin',label:'Admin',desc:'Full control'},
+  {id:'manager',label:'Manager',desc:'Create projects, manage crew'},
+  {id:'crew',label:'Crew',desc:'Survey & repair work'},
+  {id:'client',label:'Client',desc:'Review & approve surveys'},
+];
+
+const RT=[
+  {id:'volumen',label:'Volume',unit:'L',
+   fields:[{k:'largo',l:'Length (mm)'},{k:'ancho',l:'Width (mm)'},{k:'prof',l:'Depth (mm)'}],
+   calc:d=>{const v=(parseFloat(d.largo||0)*parseFloat(d.ancho||0)*parseFloat(d.prof||0))/1000000;return v>0?v.toFixed(3)+' L':'—';}},
+  {id:'area',label:'Area',unit:'m²',
+   fields:[{k:'d1',l:'Dim 1 (mm)'},{k:'d2',l:'Dim 2 (mm)'}],
+   calc:d=>{const a=(parseFloat(d.d1||0)*parseFloat(d.d2||0))/1000000;return a>0?a.toFixed(4)+' m²':'—';}},
+  {id:'linear',label:'Linear m',unit:'m',
+   fields:[{k:'len',l:'Length (mm)'}],
+   calc:d=>{const m=parseFloat(d.len||0)/1000;return m>0?m.toFixed(3)+' m':'—';}},
+  {id:'cantidad',label:'Qty',unit:'ud',
+   fields:[{k:'qty',l:'Quantity'}],
+   calc:d=>parseFloat(d.qty||0)>0?parseFloat(d.qty||0).toFixed(0)+' ud':'—'},
+  {id:'other',label:'Other',unit:'—',
+   fields:[],
+   calc:()=>'—'},
+];
+
+const HAZARDS=[
+  {id:'yellow',label:'Recommendation',color:'#d97706'},
+  {id:'orange',label:'Urgent',color:'#ea580c'},
+  {id:'red',label:'Hazard',color:'#dc2626'}
+];
+const HC={yellow:'#d97706',orange:'#ea580c',red:'#dc2626'};
+const pCol=(p,currentUser)=>{
+  if(p.approval==='declined')return C.declined;
+  if(currentUser&&p.createdBy&&p.createdBy!==currentUser)return C.greyPin;
+  return HC[p.hazard]||'#6b7280';
+};
+const getMeas=(pin,m)=>{const r=RT.find(r=>r.id===pin.repairType);if(!r||!(m||pin.measurements))return'—';return r.calc(m||pin.measurements);};
+const fmtDate=iso=>{if(!iso)return'';const d=new Date(iso);return d.toLocaleDateString('en-NZ')+' '+d.toLocaleTimeString('en-NZ',{hour:'2-digit',minute:'2-digit'});};
+
+// ── INDEXEDDB ─────────────────────────────────────────────────────────────────
+const DB_NAME='ral-quicksurvey';const DB_VER=1;const STORE='projects';const PRICE_STORE='prices';
+let _db=null;
+function openDB(){
+  if(_db)return Promise.resolve(_db);
+  return new Promise((res,rej)=>{
+    const req=indexedDB.open(DB_NAME,DB_VER);
+    req.onupgradeneeded=e=>{const db=e.target.result;if(!db.objectStoreNames.contains(STORE))db.createObjectStore(STORE,{keyPath:'id'});if(!db.objectStoreNames.contains(PRICE_STORE))db.createObjectStore(PRICE_STORE,{keyPath:'id'});};
+    req.onsuccess=e=>{_db=e.target.result;res(_db);};
+    req.onerror=e=>rej(e.target.error);
+  });
+}
+async function dbGetAll(){const db=await openDB();return new Promise((res,rej)=>{const tx=db.transaction(STORE,'readonly');const req=tx.objectStore(STORE).getAll();req.onsuccess=e=>res(e.target.result||[]);req.onerror=e=>rej(e.target.error);});}
+async function dbPut(project){const db=await openDB();return new Promise((res,rej)=>{const tx=db.transaction(STORE,'readwrite');const req=tx.objectStore(STORE).put(project);req.onsuccess=()=>res();req.onerror=e=>rej(e.target.error);});}
+async function dbDelete(id){const db=await openDB();return new Promise((res,rej)=>{const tx=db.transaction(STORE,'readwrite');const req=tx.objectStore(STORE).delete(id);req.onsuccess=()=>res();req.onerror=e=>rej(e.target.error);});}
+async function dbGetPrices(projectId){const db=await openDB();return new Promise(res=>{const tx=db.transaction(PRICE_STORE,'readonly');const req=tx.objectStore(PRICE_STORE).get(projectId);req.onsuccess=e=>res(e.target.result?e.target.result.prices:{});req.onerror=()=>res({});});}
+async function dbSavePrices(projectId,prices){const db=await openDB();return new Promise(res=>{const tx=db.transaction(PRICE_STORE,'readwrite');tx.objectStore(PRICE_STORE).put({id:projectId,prices});tx.oncomplete=()=>res();tx.onerror=()=>res();});}
+
+// ── JSON EXPORT / IMPORT ──────────────────────────────────────────────────────
+async function exportProject(project){
+  const prices=await dbGetPrices(project.id).catch(()=>({}));
+  const bundle={
+    _type:'ral-quicksurvey-export',
+    _version:1,
+    _exportedAt:new Date().toISOString(),
+    project,
+    prices
+  };
+  const json=JSON.stringify(bundle,null,2);
+  const blob=new Blob([json],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download='quicksurvey-'+(project.name||'project').replace(/[^a-z0-9]+/gi,'-').toLowerCase()+'-'+new Date().toISOString().slice(0,10)+'.json';
+  document.body.appendChild(a);a.click();
+  setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(url);},100);
+}
+async function importProjectFromFile(file){
+  const text=await file.text();
+  const bundle=JSON.parse(text);
+  if(bundle._type!=='ral-quicksurvey-export'||!bundle.project)throw new Error('Invalid Quick Survey export file');
+  const p=bundle.project;
+  // Assign new ID to avoid collision, keep original in _importedFrom
+  const newId=Date.now().toString();
+  const imported={...p,id:newId,_importedFrom:p.id,_importedAt:new Date().toISOString(),name:p.name+' (imported)'};
+  await dbPut(imported);
+  if(bundle.prices&&Object.keys(bundle.prices).length>0)await dbSavePrices(newId,bundle.prices);
+  return imported;
+}
+
+// ── COMPRESS ──────────────────────────────────────────────────────────────────
+async function compress(dataUrl,maxW=900,quality=0.5){
+  return new Promise(resolve=>{
+    const img=new Image();
+    img.onload=()=>{const scale=img.width>maxW?maxW/img.width:1;const w=Math.round(img.width*scale);const h=Math.round(img.height*scale);const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);resolve(c.toDataURL('image/jpeg',quality));};
+    img.onerror=()=>resolve(dataUrl);img.src=dataUrl;
+  });
+}
+
+// ── WATERMARK ─────────────────────────────────────────────────────────────────
+async function wm(dataUrl,pin,userName){
+  const compressed=await compress(dataUrl);
+  return new Promise(resolve=>{
+    const img=new Image();
+    img.onload=()=>{
+      const c=document.createElement('canvas');c.width=img.width;c.height=img.height;
+      const ctx=c.getContext('2d');ctx.drawImage(img,0,0);
+      const repType=(RT.find(r=>r.id===pin.repairType)||{label:''}).label;
+      const line1='#'+pin.id+'  '+(pin.repairName||'Repair')+'  '+repType+'  '+getMeas(pin);
+      const line2=new Date().toLocaleString('en-NZ',{weekday:'short',day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      const line3=userName||'User';
+      const fs=Math.max(20,Math.round(img.height*0.033));const lh=Math.round(fs*1.6);const pad=Math.round(fs*0.75);const stripH=lh*3+pad*2;
+      ctx.globalAlpha=0.85;ctx.fillStyle='#0d1117';ctx.fillRect(0,img.height-stripH,img.width,stripH);
+      ctx.globalAlpha=1;ctx.fillStyle='#2563eb';ctx.fillRect(0,img.height-stripH,Math.max(5,Math.round(img.width*0.005)),stripH);
+      const tx=pad+Math.max(5,Math.round(img.width*0.005))+6;
+      ctx.font='700 '+fs+'px Arial,sans-serif';ctx.fillStyle='#ffffff';ctx.fillText(line1,tx,img.height-stripH+pad+fs);
+      ctx.font='400 '+fs+'px Arial,sans-serif';ctx.fillStyle='#94a3b8';ctx.fillText(line2,tx,img.height-stripH+pad+lh+fs);
+      ctx.font='600 '+fs+'px Arial,sans-serif';ctx.fillStyle='#60a5fa';ctx.fillText(line3,tx,img.height-stripH+pad+lh*2+fs);
+      resolve(c.toDataURL('image/jpeg',0.72));
+    };
+    img.onerror=()=>resolve(compressed);img.src=compressed;
+  });
+}
+
+// ── DRAWING CANVAS ────────────────────────────────────────────────────────────
+function DrawingCanvas({imageSrc,onClose}){
+  const canvasRef=useRef(null);
+  const [tool,setTool]=useState('pen');const [color,setColor]=useState('#ff3b30');const [size,setSize]=useState(12);
+  const [baseImage,setBaseImage]=useState(null);const [drawingData,setDrawingData]=useState([]);
+  const ctxRef=useRef(null);const drawingRef=useRef(false);const startRef=useRef(null);const lastRef=useRef(null);
+  const toolRef=useRef(tool);const colorRef=useRef(color);const sizeRef=useRef(size);const dataRef=useRef(drawingData);
+  useEffect(()=>{toolRef.current=tool;},[tool]);useEffect(()=>{colorRef.current=color;},[color]);
+  useEffect(()=>{sizeRef.current=size;},[size]);useEffect(()=>{dataRef.current=drawingData;},[drawingData]);
+
+  useEffect(()=>{if(!imageSrc)return;const img=new Image();img.onload=()=>{const c=canvasRef.current;c.width=img.width;c.height=img.height;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);setBaseImage(ctx.getImageData(0,0,c.width,c.height));ctxRef.current=ctx;};img.src=imageSrc;},[imageSrc]);
+
+  const playback=d=>{const ctx=ctxRef.current;ctx.strokeStyle=d.color;ctx.fillStyle=d.color;ctx.lineWidth=d.size;ctx.lineCap='round';ctx.lineJoin='round';if(d.tool==='pen'){ctx.beginPath();d.points.forEach((p,i)=>{i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y);});ctx.stroke();}else if(d.tool==='arrow'){const{x1,y1,x2,y2}=d;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();const ah=Math.max(15,d.size*3),ang=Math.atan2(y2-y1,x2-x1);ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-ah*Math.cos(ang-Math.PI/6),y2-ah*Math.sin(ang-Math.PI/6));ctx.lineTo(x2-ah*Math.cos(ang+Math.PI/6),y2-ah*Math.sin(ang+Math.PI/6));ctx.closePath();ctx.fill();}else if(d.tool==='rect'){ctx.strokeRect(Math.min(d.x1,d.x2),Math.min(d.y1,d.y2),Math.abs(d.x2-d.x1),Math.abs(d.y2-d.y1));}};
+  const redraw=()=>{const c=canvasRef.current;if(!c||!baseImage)return;const ctx=c.getContext('2d');ctx.putImageData(baseImage,0,0);dataRef.current.forEach(d=>playback(d));};
+  const getCoords=e=>{const c=canvasRef.current;if(!c)return null;const rect=c.getBoundingClientRect();let cx,cy;if(e.touches&&e.touches.length>0){cx=e.touches[0].clientX;cy=e.touches[0].clientY;}else if(e.changedTouches&&e.changedTouches.length>0){cx=e.changedTouches[0].clientX;cy=e.changedTouches[0].clientY;}else{cx=e.clientX;cy=e.clientY;}return{x:(cx-rect.left)*(c.width/rect.width),y:(cy-rect.top)*(c.height/rect.height)};};
+
+  const startDraw=e=>{if(e&&e.preventDefault)e.preventDefault();const pos=getCoords(e);if(!pos)return;drawingRef.current=true;startRef.current=pos;lastRef.current=pos;if(toolRef.current==='pen'){const stroke={tool:'pen',color:colorRef.current,size:sizeRef.current,points:[pos]};dataRef.current=[...dataRef.current,stroke];setDrawingData(dataRef.current);}};
+  const moveDraw=e=>{if(!drawingRef.current)return;if(e&&e.preventDefault)e.preventDefault();const pos=getCoords(e);if(!pos)return;lastRef.current=pos;const ctx=ctxRef.current;if(!ctx)return;if(toolRef.current==='pen'){ctx.strokeStyle=colorRef.current;ctx.lineWidth=sizeRef.current;ctx.lineCap='round';ctx.lineJoin='round';const stroke=dataRef.current[dataRef.current.length-1];const prev=stroke.points[stroke.points.length-1];ctx.beginPath();ctx.moveTo(prev.x,prev.y);ctx.lineTo(pos.x,pos.y);ctx.stroke();stroke.points.push(pos);}else{redraw();const s=startRef.current;ctx.strokeStyle=colorRef.current;ctx.fillStyle=colorRef.current;ctx.lineWidth=sizeRef.current;ctx.lineCap='round';ctx.lineJoin='round';if(toolRef.current==='arrow'){ctx.beginPath();ctx.moveTo(s.x,s.y);ctx.lineTo(pos.x,pos.y);ctx.stroke();const ah=Math.max(15,sizeRef.current*3),ang=Math.atan2(pos.y-s.y,pos.x-s.x);ctx.beginPath();ctx.moveTo(pos.x,pos.y);ctx.lineTo(pos.x-ah*Math.cos(ang-Math.PI/6),pos.y-ah*Math.sin(ang-Math.PI/6));ctx.lineTo(pos.x-ah*Math.cos(ang+Math.PI/6),pos.y-ah*Math.sin(ang+Math.PI/6));ctx.closePath();ctx.fill();}else if(toolRef.current==='rect'){ctx.strokeRect(Math.min(s.x,pos.x),Math.min(s.y,pos.y),Math.abs(pos.x-s.x),Math.abs(pos.y-s.y));}}};
+  const endDraw=e=>{if(!drawingRef.current)return;if(e&&e.preventDefault)e.preventDefault();drawingRef.current=false;const s=startRef.current;const l=lastRef.current;const t=toolRef.current;if(t==='pen'){setDrawingData([...dataRef.current]);}else if(s&&l&&(t==='arrow'||t==='rect')){if(Math.abs(l.x-s.x)>2||Math.abs(l.y-s.y)>2){const shape={tool:t,color:colorRef.current,size:sizeRef.current,x1:s.x,y1:s.y,x2:l.x,y2:l.y};dataRef.current=[...dataRef.current,shape];setDrawingData(dataRef.current);}else{redraw();}}startRef.current=null;lastRef.current=null;};
+  const undo=()=>{dataRef.current=dataRef.current.slice(0,-1);setDrawingData(dataRef.current);redraw();};
+  const clear=()=>{if(!confirm('Clear all drawings?'))return;dataRef.current=[];setDrawingData([]);const c=canvasRef.current;if(c&&baseImage)c.getContext('2d').putImageData(baseImage,0,0);};
+  const save=()=>{const c=canvasRef.current;onClose(c.toDataURL('image/jpeg',0.72));};
+
+  useEffect(()=>{const c=canvasRef.current;if(!c)return;const ts=e=>startDraw(e);const tm=e=>moveDraw(e);const te=e=>endDraw(e);c.addEventListener('touchstart',ts,{passive:false});c.addEventListener('touchmove',tm,{passive:false});c.addEventListener('touchend',te,{passive:false});c.addEventListener('touchcancel',te,{passive:false});return()=>{c.removeEventListener('touchstart',ts);c.removeEventListener('touchmove',tm);c.removeEventListener('touchend',te);c.removeEventListener('touchcancel',te);};},[baseImage]);
+
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.9)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',zIndex:300}}>
+      <div style={{padding:'12px 20px',background:'#111827',borderBottom:'1px solid #1e3a5f',width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0}}>
+        <span style={{fontSize:14,fontWeight:700,color:'#fff',fontFamily:'Barlow Condensed',letterSpacing:1}}>✎ DRAW ON PHOTO</span>
+        <button onClick={()=>onClose(null)} style={{background:'none',border:'none',color:'#64748b',fontSize:24,cursor:'pointer',padding:'4px 10px',minWidth:40,minHeight:40}}>×</button>
+      </div>
+      <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:12,overflow:'auto',width:'100%',touchAction:'none'}}>
+        <canvas ref={canvasRef} onMouseDown={startDraw} onMouseMove={moveDraw} onMouseUp={endDraw} onMouseLeave={endDraw}
+          style={{maxWidth:'96vw',maxHeight:'68vh',border:'2px solid #1e3a5f',borderRadius:8,cursor:tool==='pen'?'crosshair':'default',display:'block',touchAction:'none'}}/>
+      </div>
+      <div style={{padding:'10px 12px',background:'#111827',borderTop:'1px solid #1e3a5f',width:'100%',display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
+        <div style={{display:'flex',gap:5,alignItems:'center',flexWrap:'wrap'}}>
+          {['pen','arrow','rect'].map(t=>(
+            <button key={t} onClick={()=>setTool(t)} style={{padding:'8px 12px',borderRadius:5,border:'1px solid '+(tool===t?'#2563eb':'#1e3a5f'),background:tool===t?'#2563eb22':'transparent',color:tool===t?'#2563eb':'#64748b',fontSize:12,cursor:'pointer',fontWeight:tool===t?700:400,fontFamily:'Barlow Condensed',minHeight:36}}>
+              {t==='pen'?'✏ Pen':t==='arrow'?'→ Arrow':'▢ Rect'}
+            </button>))}
+          <div style={{width:32,height:36,borderRadius:4,border:'2px solid '+color,background:color,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,position:'relative'}}>
+            <input type="color" value={color} onChange={e=>setColor(e.target.value)} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer',width:'100%',height:'100%'}}/>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:4}}>
+            <span style={{fontSize:10,color:'#64748b',fontFamily:'DM Mono'}}>Size</span>
+            <input type="range" min="1" max="20" value={size} onChange={e=>setSize(parseInt(e.target.value))} style={{width:70,height:20,cursor:'pointer'}}/>
+            <span style={{fontSize:10,color:'#64748b',fontFamily:'DM Mono',minWidth:16}}>{size}</span>
+          </div>
+        </div>
+        <div style={{display:'flex',gap:5}}>
+          <button onClick={undo} style={{padding:'8px 12px',borderRadius:5,border:'1px solid #475569',background:'transparent',color:'#64748b',fontSize:11,cursor:'pointer',fontFamily:'Barlow Condensed',minHeight:36}}>↶ UNDO</button>
+          <button onClick={clear} style={{padding:'8px 12px',borderRadius:5,border:'1px solid #ef444444',background:'transparent',color:'#ef444488',fontSize:11,cursor:'pointer',fontFamily:'Barlow Condensed',minHeight:36}}>✕ CLEAR</button>
+          <button onClick={save} style={{padding:'8px 16px',borderRadius:5,border:'1px solid #22c55e',background:'#22c55e22',color:'#22c55e',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'Barlow Condensed',minHeight:36}}>✓ SAVE</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── STYLES ────────────────────────────────────────────────────────────────────
+const IS={width:'100%',background:C.card,border:'1px solid '+C.border,borderRadius:7,padding:'9px 12px',color:C.text,fontSize:13,outline:'none',fontFamily:'Barlow,sans-serif'};
+const LS={fontSize:10,color:C.textDim,display:'block',marginBottom:5,fontWeight:600,letterSpacing:1.2};
+
+// ── USER SETUP SCREEN ─────────────────────────────────────────────────────────
+function UserSetup({onDone}){
+  const [name,setName]=useState('');
+  const [role,setRole]=useState('crew');
+  const [company,setCompany]=useState('');
+  return(
+    <div style={{height:'100vh',display:'flex',flexDirection:'column',background:C.bg}}>
+      <div style={{background:C.navyDark,padding:'0 24px',display:'flex',alignItems:'center',height:56,flexShrink:0}}>
+        <div style={{display:'flex',alignItems:'center',gap:10}}>
+          <div style={{width:30,height:30,background:C.blue,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center'}}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6" height="6" rx="1" fill="white"/><rect x="9" y="1" width="6" height="6" rx="1" fill="white" opacity="0.4"/><rect x="1" y="9" width="6" height="6" rx="1" fill="white" opacity="0.4"/><rect x="9" y="9" width="6" height="6" rx="1" fill="white"/></svg>
+          </div>
+          <div>
+            <div style={{fontFamily:'Barlow Condensed',fontSize:15,fontWeight:800,color:'#fff',letterSpacing:1}}>QUICK SURVEY</div>
+            <div style={{fontSize:10,color:'#475569',letterSpacing:1}}>by RAL Solutions</div>
+          </div>
+        </div>
+      </div>
+      <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+        <div style={{background:C.card,border:'1px solid '+C.border,borderRadius:14,padding:36,width:420,maxWidth:'95vw',boxShadow:'0 4px 24px rgba(0,0,0,0.08)'}}>
+          <div style={{fontFamily:'Barlow Condensed',fontSize:26,fontWeight:800,color:C.navyDark,marginBottom:6}}>Welcome</div>
+          <div style={{fontSize:13,color:C.textDim,marginBottom:24}}>Set up your profile to get started</div>
+          <label style={LS}>YOUR NAME *</label>
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Lionel Melo" style={{...IS,marginBottom:16}}/>
+          <label style={LS}>COMPANY / ENVIRONMENT (optional)</label>
+          <input value={company} onChange={e=>setCompany(e.target.value)} placeholder="e.g. Be Wash, Altitude Access..." style={{...IS,marginBottom:16}}/>
+          <label style={LS}>YOUR ROLE</label>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginBottom:24}}>
+            {ROLES.map(r=>(
+              <button key={r.id} onClick={()=>setRole(r.id)}
+                style={{padding:'10px 12px',borderRadius:8,border:'1.5px solid '+(role===r.id?C.blue:C.border),background:role===r.id?C.blueDim:C.card,color:role===r.id?C.blue:C.textDim,fontSize:13,fontWeight:role===r.id?700:400,cursor:'pointer',textAlign:'left',fontFamily:'Barlow Condensed'}}>
+                <div style={{fontSize:14,fontWeight:700}}>{r.label}</div>
+                <div style={{fontSize:10,fontWeight:400,marginTop:2,opacity:0.7}}>{r.desc}</div>
+              </button>
+            ))}
+          </div>
+          <button disabled={!name.trim()} onClick={()=>onDone({name:name.trim(),role,company:company.trim()||'Independent'})}
+            style={{width:'100%',padding:'12px',background:name.trim()?C.navyDark:'#e5e7eb',border:'none',borderRadius:8,color:name.trim()?'#fff':'#9ca3af',fontSize:15,fontWeight:700,cursor:name.trim()?'pointer':'default',fontFamily:'Barlow Condensed',letterSpacing:1}}>
+            GET STARTED
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── ROLE & USER SWITCHER ──────────────────────────────────────────────────────
+const TEST_USERS=[
+  {name:'Lionel Melo',company:'Altitude Access',initials:'LM'},
+  {name:'John Smith',company:'Altitude Access',initials:'JS'},
+];
+function RoleSwitcher({user,onSwitch,onSwitchUser,onLogout,onClose}){
+  const [installAvail,setInstallAvail]=useState(typeof window!=='undefined'&&window.__qsInstallAvailable===true);
+  const [installing,setInstalling]=useState(false);
+  useEffect(()=>{
+    const a=()=>setInstallAvail(true);
+    const d=()=>setInstallAvail(false);
+    window.addEventListener('qs-install-available',a);
+    window.addEventListener('qs-install-done',d);
+    return()=>{window.removeEventListener('qs-install-available',a);window.removeEventListener('qs-install-done',d);};
+  },[]);
+  const doInstall=async()=>{
+    if(!window.__qsInstallApp)return;
+    setInstalling(true);
+    try{await window.__qsInstallApp();}catch(e){}
+    setInstalling(false);
+  };
+  // Detect if already running as installed PWA
+  const isStandalone=typeof window!=='undefined'&&(window.matchMedia('(display-mode: standalone)').matches||window.navigator.standalone===true);
+  // Detect iOS Safari (different install flow — no beforeinstallprompt support)
+  const isIOS=typeof navigator!=='undefined'&&/iPad|iPhone|iPod/.test(navigator.userAgent);
+  return(
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:C.card,border:'1px solid '+C.border,borderRadius:14,padding:24,width:380,maxWidth:'95vw',boxShadow:'0 20px 60px rgba(0,0,0,0.2)',maxHeight:'90vh',overflowY:'auto'}}>
+        <div style={{fontFamily:'Barlow Condensed',fontSize:20,fontWeight:800,color:C.navyDark,marginBottom:4}}>Settings</div>
+        <div style={{fontSize:12,color:C.textDim,marginBottom:16}}>{user.name} · {user.company}</div>
+
+        <div style={{fontSize:10,color:C.textMuted,letterSpacing:2,marginBottom:8,fontFamily:'Barlow Condensed',fontWeight:700}}>SWITCH USER</div>
+        <div style={{display:'flex',gap:6,marginBottom:16}}>
+          {TEST_USERS.map(u=>{
+            const active=user.name===u.name;
+            return(
+              <button key={u.name} onClick={()=>onSwitchUser(u)}
+                style={{flex:1,padding:'10px 12px',borderRadius:8,border:'1.5px solid '+(active?'#8b5cf6':C.border),background:active?'#8b5cf610':C.card,color:active?'#7c3aed':C.textDim,fontSize:13,fontWeight:active?700:400,cursor:'pointer',fontFamily:'Barlow Condensed',textAlign:'center'}}>
+                <div style={{width:32,height:32,borderRadius:'50%',background:active?'#7c3aed':'#d1d5db',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700,margin:'0 auto 6px',fontFamily:'DM Mono'}}>{u.initials}</div>
+                {u.name}
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{fontSize:10,color:C.textMuted,letterSpacing:2,marginBottom:8,fontFamily:'Barlow Condensed',fontWeight:700}}>ROLE</div>
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {ROLES.map(r=>{
+            const active=user.role===r.id;
+            return(
+              <button key={r.id} onClick={()=>onSwitch(r.id)}
+                style={{padding:'12px 14px',borderRadius:8,border:'1.5px solid '+(active?C.blue:C.border),background:active?C.blueDim:C.card,color:active?C.blue:C.textDim,fontSize:14,fontWeight:active?700:400,cursor:'pointer',textAlign:'left',fontFamily:'Barlow Condensed',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div><span style={{fontWeight:700}}>{r.label}</span><span style={{fontSize:11,marginLeft:8,opacity:0.6}}>{r.desc}</span></div>
+                {active&&<span style={{fontSize:16}}>✓</span>}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{borderTop:'1px solid '+C.border,marginTop:16,paddingTop:12}}>
+          {isStandalone?(
+            <div style={{padding:'10px 12px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,marginBottom:10,fontSize:12,color:'#16a34a',textAlign:'center',fontFamily:'Barlow Condensed',fontWeight:700}}>
+              ✓ Running as installed app
+            </div>
+          ):installAvail?(
+            <button onClick={doInstall} disabled={installing} style={{width:'100%',padding:'12px',borderRadius:8,border:'1px solid '+C.blue,background:C.blueDim,color:C.blue,fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:'Barlow Condensed',letterSpacing:0.5,marginBottom:10,opacity:installing?0.6:1}}>
+              {installing?'INSTALLING...':'⬇ INSTALL ON THIS DEVICE'}
+            </button>
+          ):isIOS?(
+            <div style={{padding:'10px 12px',background:C.surface,border:'1px solid '+C.border,borderRadius:8,marginBottom:10,fontSize:11,color:C.textDim,lineHeight:1.5}}>
+              <div style={{fontWeight:700,color:C.navyDark,marginBottom:4,fontFamily:'Barlow Condensed',fontSize:12,letterSpacing:1}}>INSTALL ON iPHONE / iPAD</div>
+              Tap the <span style={{fontFamily:'monospace'}}>Share</span> button in Safari, then <span style={{fontWeight:700}}>Add to Home Screen</span>.
+            </div>
+          ):null}
+          <button onClick={onLogout} style={{width:'100%',padding:'10px',borderRadius:8,border:'1px solid #dc262644',background:'#dc262608',color:'#dc2626',fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:'Barlow Condensed',letterSpacing:0.5}}>↩ LOG OUT / SWITCH COMPANY</button>
+          <div style={{fontSize:10,color:C.textMuted,textAlign:'center',marginTop:6}}>Returns to the Welcome screen to change name, company, or role</div>
+        </div>
+        <button onClick={onClose} style={{width:'100%',padding:'10px',borderRadius:8,border:'1px solid '+C.border,background:'transparent',color:C.textDim,fontSize:13,cursor:'pointer',marginTop:10}}>Close</button>
+      </div>
+    </div>
+  );
+}
+
+// ── HOME ──────────────────────────────────────────────────────────────────────
+function HomeScreen({onOpen,onCreate,user,onRoleSwitch,onSwitchUser,onLogout}){
+  const [list,setList]=useState([]);const [loading,setLoading]=useState(true);const [showRole,setShowRole]=useState(false);
+  const fileInputRef=useRef(null);
+  useEffect(()=>{dbGetAll().then(all=>{setList(all.sort((a,b)=>b.createdAt>a.createdAt?1:-1));setLoading(false);});},[]);
+  const del=async id=>{if(!confirm('Delete this project?'))return;await dbDelete(id);setList(l=>l.filter(p=>p.id!==id));};
+  const handleExport=async(e,p)=>{e.stopPropagation();try{await exportProject(p);}catch(err){alert('Export failed: '+err.message);}};
+  const handleImport=async(e)=>{
+    const f=e.target.files[0];if(!f)return;
+    try{
+      const imported=await importProjectFromFile(f);
+      const all=await dbGetAll();
+      setList(all.sort((a,b)=>b.createdAt>a.createdAt?1:-1));
+      alert('✓ Imported "'+imported.name+'" successfully');
+    }catch(err){alert('Import failed: '+err.message);}
+    e.target.value='';
+  };
+  const canCreate=user.role==='admin'||user.role==='manager';
+  return(
+    <div style={{height:'100vh',display:'flex',flexDirection:'column',background:C.bg}}>
+      <div style={{background:C.navyDark,padding:'0 24px',display:'flex',alignItems:'center',justifyContent:'space-between',height:56,flexShrink:0}}>
+        <div style={{display:'flex',alignItems:'center',gap:10}}>
+          <div style={{width:30,height:30,background:C.blue,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center'}}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6" height="6" rx="1" fill="white"/><rect x="9" y="1" width="6" height="6" rx="1" fill="white" opacity="0.4"/><rect x="1" y="9" width="6" height="6" rx="1" fill="white" opacity="0.4"/><rect x="9" y="9" width="6" height="6" rx="1" fill="white"/></svg>
+          </div>
+          <div>
+            <div style={{fontFamily:'Barlow Condensed',fontSize:15,fontWeight:800,color:'#fff',letterSpacing:1}}>QUICK SURVEY</div>
+            <div style={{fontSize:10,color:'#475569',letterSpacing:1}}>by RAL Solutions</div>
+          </div>
+        </div>
+        <button onClick={()=>setShowRole(true)} style={{background:'rgba(37,99,235,0.15)',border:'1px solid #2563eb44',borderRadius:8,color:'#93c5fd',fontSize:12,cursor:'pointer',padding:'6px 14px',fontFamily:'Barlow Condensed',fontWeight:700,display:'flex',alignItems:'center',gap:8}}>
+          <span style={{fontSize:9,color:'#475569',letterSpacing:1}}>{user.company}</span>
+          <span>{user.name}</span>
+          <span style={{fontSize:9,background:'#2563eb33',padding:'2px 6px',borderRadius:4,letterSpacing:1}}>{user.role.toUpperCase()}</span>
+        </button>
+      </div>
+      <div style={{flex:1,overflowY:'auto',display:'flex',justifyContent:'center',padding:'32px 16px'}}>
+        <div style={{width:560,maxWidth:'100%'}}>
+          <div style={{fontFamily:'Barlow Condensed',fontSize:30,fontWeight:800,color:C.navyDark,marginBottom:4}}>Projects</div>
+          <div style={{fontSize:13,color:C.textDim,marginBottom:20}}>{user.company} · {(ROLES.find(r=>r.id===user.role)||{}).label}</div>
+          {loading&&<div style={{textAlign:'center',color:C.textMuted,fontSize:13,padding:'36px'}}>Loading...</div>}
+          {!loading&&list.length===0&&<div style={{textAlign:'center',color:C.textMuted,fontSize:13,padding:'36px',border:'2px dashed '+C.border,borderRadius:12,marginBottom:14,background:C.card}}>No projects yet</div>}
+          {list.map(p=>{
+            const ptotal=p.elevations.reduce((s,e)=>s+(e.pins||[]).length,0);
+            const done=p.elevations.reduce((s,e)=>s+(e.pins||[]).filter(pi=>pi.status===ST.DONE).length,0);
+            const pct=ptotal>0?Math.round(done/ptotal*100):0;
+            return(
+              <div key={p.id} style={{background:C.card,border:'1px solid '+C.border,borderRadius:10,padding:'14px 16px',display:'flex',alignItems:'center',cursor:'pointer',marginBottom:8,boxShadow:'0 1px 3px rgba(0,0,0,0.06)',transition:'box-shadow 0.15s'}}
+                onClick={()=>onOpen(p)} onMouseEnter={e=>e.currentTarget.style.boxShadow='0 4px 12px rgba(37,99,235,0.12)'} onMouseLeave={e=>e.currentTarget.style.boxShadow='0 1px 3px rgba(0,0,0,0.06)'}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:15,fontWeight:700,color:C.navyDark,fontFamily:'Barlow Condensed'}}>{p.name}</div>
+                  <div style={{fontSize:11,color:C.textDim,marginTop:3,display:'flex',gap:10,flexWrap:'wrap'}}>
+                    <span>{p.elevations.length} elevation{p.elevations.length!==1?'s':''}</span><span>·</span><span>{ptotal} pins</span>
+                    {ptotal>0&&<><span>·</span><span style={{color:C.done,fontWeight:600}}>{pct}% done</span></>}
+                  </div>
+                  {ptotal>0&&<div style={{marginTop:6,height:3,background:C.border,borderRadius:2,overflow:'hidden'}}><div style={{height:'100%',width:pct+'%',background:pct===100?C.done:C.blue,borderRadius:2}}/></div>}
+                </div>
+                <button title="Export project" style={{background:'none',border:'none',color:C.textMuted,cursor:'pointer',fontSize:13,padding:'4px 8px'}} onClick={e=>handleExport(e,p)}>⭳</button>
+                {canCreate&&<button style={{background:'none',border:'none',color:C.textMuted,cursor:'pointer',fontSize:15,padding:'4px 8px'}} onClick={e=>{e.stopPropagation();del(p.id);}}>🗑</button>}
+              </div>
+            );
+          })}
+          <div style={{display:'flex',gap:8,marginTop:4}}>
+            {canCreate&&<button onClick={onCreate} style={{flex:1,padding:'13px',background:C.navyDark,border:'none',borderRadius:10,color:'#fff',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:'Barlow Condensed',letterSpacing:1}}>+ NEW PROJECT</button>}
+            {canCreate&&<button onClick={()=>fileInputRef.current?.click()} title="Import project from JSON" style={{padding:'13px 16px',background:'transparent',border:'1.5px solid '+C.border,borderRadius:10,color:C.textDim,fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:'Barlow Condensed',letterSpacing:1,whiteSpace:'nowrap'}}>⭱ IMPORT</button>}
+            <input ref={fileInputRef} type="file" accept="application/json,.json" style={{display:'none'}} onChange={handleImport}/>
+          </div>
+        </div>
+      </div>
+      {showRole&&<RoleSwitcher user={user} onSwitch={r=>{onRoleSwitch(r);setShowRole(false);}} onSwitchUser={u=>{onSwitchUser(u);setShowRole(false);}} onLogout={onLogout} onClose={()=>setShowRole(false)}/>}
+    </div>
+  );
+}
+
+// ── SETUP ─────────────────────────────────────────────────────────────────────
+function Setup({onDone,onBack}){
+  const [step,setStep]=useState(0);const [name,setName]=useState('');const [cnt,setCnt]=useState(1);const [names,setNames]=useState(['North']);
+  const defs=['North','South','East','West','Roof','Entry','Rear','Side'];
+  const updCnt=n=>{const c=Math.min(8,Math.max(1,parseInt(n)||1));setCnt(c);setNames(p=>{const a=[...p];while(a.length<c)a.push(defs[a.length]||'Elevation '+(a.length+1));return a.slice(0,c);});};
+  return(
+    <div style={{height:'100vh',display:'flex',flexDirection:'column',background:C.bg}}>
+      <div style={{background:C.navyDark,padding:'0 24px',display:'flex',alignItems:'center',height:56,flexShrink:0}}>
+        <span style={{fontFamily:'Barlow Condensed',fontSize:15,fontWeight:800,color:'#fff',letterSpacing:1}}>QUICK SURVEY — NEW PROJECT</span>
+      </div>
+      <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+        <div style={{background:C.card,border:'1px solid '+C.border,borderRadius:14,padding:36,width:460,maxWidth:'95vw',boxShadow:'0 4px 24px rgba(0,0,0,0.08)'}}>
+          {step===0?(
+            <>
+              <div style={{fontFamily:'Barlow Condensed',fontSize:26,fontWeight:800,color:C.navyDark,marginBottom:20}}>Project details</div>
+              <label style={LS}>PROJECT NAME *</label>
+              <input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Auckland Tower" style={{...IS,marginBottom:18}} onKeyDown={e=>e.key==='Enter'&&name.trim()&&setStep(1)}/>
+              <label style={LS}>ELEVATIONS (1–8)</label>
+              <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:20}}>
+                <button onClick={()=>updCnt(cnt-1)} style={{width:38,height:38,borderRadius:7,border:'1px solid '+C.border,background:C.bg,color:C.textDim,fontSize:20,cursor:'pointer'}}>−</button>
+                <input value={cnt} onChange={e=>updCnt(e.target.value)} style={{flex:1,background:C.bg,border:'1px solid '+C.border,borderRadius:7,padding:'9px',color:C.navyDark,fontSize:20,outline:'none',textAlign:'center',fontWeight:700,fontFamily:'Barlow Condensed'}}/>
+                <button onClick={()=>updCnt(cnt+1)} style={{width:38,height:38,borderRadius:7,border:'1px solid '+C.border,background:C.bg,color:C.textDim,fontSize:20,cursor:'pointer'}}>+</button>
+              </div>
+              <div style={{display:'flex',gap:10}}>
+                <button onClick={onBack} style={{flex:1,padding:'10px',background:'transparent',border:'1px solid '+C.border,borderRadius:8,color:C.textDim,fontSize:13,cursor:'pointer'}}>← Back</button>
+                <button disabled={!name.trim()} onClick={()=>setStep(1)} style={{flex:2,padding:'11px',background:name.trim()?C.navyDark:'#e5e7eb',border:'none',borderRadius:8,color:name.trim()?'#fff':'#9ca3af',fontSize:14,fontWeight:700,cursor:name.trim()?'pointer':'default',fontFamily:'Barlow Condensed'}}>NEXT →</button>
+              </div>
+            </>
+          ):(
+            <>
+              <div style={{fontFamily:'Barlow Condensed',fontSize:26,fontWeight:800,color:C.navyDark,marginBottom:20}}>Name your elevations</div>
+              <div style={{maxHeight:340,overflowY:'auto'}}>
+                {Array.from({length:cnt}).map((_,i)=>(
+                  <div key={i} style={{marginBottom:10}}>
+                    <label style={LS}>ELEVATION {i+1}</label>
+                    <input value={names[i]||''} onChange={e=>{const n=[...names];n[i]=e.target.value;setNames(n);}} placeholder={defs[i]||'Elevation '+(i+1)} style={{...IS}}/>
+                  </div>
+                ))}
+              </div>
+              <div style={{display:'flex',gap:10,marginTop:16}}>
+                <button onClick={()=>setStep(0)} style={{flex:1,padding:'10px',background:'transparent',border:'1px solid '+C.border,borderRadius:8,color:C.textDim,fontSize:13,cursor:'pointer'}}>← Back</button>
+                <button onClick={()=>onDone(name.trim(),names)} style={{flex:2,padding:'10px',background:C.navyDark,border:'none',borderRadius:8,color:'#fff',fontSize:14,fontWeight:700,cursor:'pointer',fontFamily:'Barlow Condensed'}}>START SURVEY</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── PHOTO NAVIGATOR ───────────────────────────────────────────────────────────
+function PhotoNav({photos,initIdx=0,onClose}){
+  const [idx,setIdx]=useState(Math.min(initIdx,photos.length-1));
+  if(!photos.length)return null;
+  return(
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.97)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:400}}>
+      <div onClick={e=>e.stopPropagation()} style={{display:'flex',alignItems:'center',gap:14,maxWidth:'96vw'}}>
+        <button onClick={()=>setIdx(i=>Math.max(0,i-1))} disabled={idx===0} style={{background:'rgba(37,99,235,0.2)',border:'1px solid #2563eb44',borderRadius:'50%',color:idx===0?'#333':'#fff',width:46,height:46,fontSize:22,cursor:idx===0?'default':'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>‹</button>
+        <div style={{textAlign:'center'}}>
+          <img src={photos[idx]} style={{maxWidth:'78vw',maxHeight:'80vh',objectFit:'contain',borderRadius:8,display:'block'}} alt=""/>
+          <div style={{fontSize:11,color:'#555',marginTop:8}}>{idx+1} / {photos.length}</div>
+        </div>
+        <button onClick={()=>setIdx(i=>Math.min(photos.length-1,i+1))} disabled={idx===photos.length-1} style={{background:'rgba(37,99,235,0.2)',border:'1px solid #2563eb44',borderRadius:'50%',color:idx===photos.length-1?'#333':'#fff',width:46,height:46,fontSize:22,cursor:idx===photos.length-1?'default':'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>›</button>
+      </div>
+      <button onClick={onClose} style={{position:'absolute',top:16,right:16,background:'rgba(37,99,235,0.2)',border:'1px solid #2563eb44',borderRadius:'50%',color:'#fff',width:36,height:36,cursor:'pointer',fontSize:18,display:'flex',alignItems:'center',justifyContent:'center'}}>×</button>
+    </div>
+  );
+}
+
+// ── PIN MODAL ─────────────────────────────────────────────────────────────────
+function PinModal({pin,repairList,onSave,onTrash,onDuplicate,onClose,onAddRT,isMobile,user}){
+  const isNew=!pin.repairName;
+  const isDup=pin._justDuplicated===true;
+  const isClient=user.role==='client';
+  // New pins go to 'choose' or 'new'; duplicates jump straight to 'fill' with data carried over; existing pins open at status
+  const [view,setView]=useState(isNew?(repairList.length>0?'choose':'new'):(isDup?'fill':'status'));
+  const [selR,setSelR]=useState(repairList.find(r=>r.name===pin.repairName)||null);
+  const [newName,setNewName]=useState(isDup?(pin.repairName||''):'');
+  const [rtype,setRtype]=useState(isDup?(pin.repairType||'linear'):'linear');
+  const [meas,setMeas]=useState(()=>({...(pin.measurements||{})}));
+  const [comment,setComment]=useState(isDup?(pin.comment||''):'');
+  const [hazard,setHazard]=useState(pin.hazard||'yellow');
+  const [staging,setStaging]=useState([]);const [saving,setSaving]=useState(false);
+  const [photoNav,setPhotoNav]=useState(null);const [drawingMode,setDrawingMode]=useState(null);
+  const [origMeas,setOrigMeas]=useState(null);
+
+  const MIN=1;const MAX=3;
+  const ert=selR?selR.type:rtype;const rt=RT.find(r=>r.id===ert);
+  const isOther=ert==='other';
+
+  const surveyPhotos=pin.surveyPhotos||[];const fixingPhotos=pin.fixingPhotos||[];const donePhotos=pin.donePhotos||[];
+  const allPhotos=[...surveyPhotos,...fixingPhotos,...donePhotos];
+  const cur=pin.status||ST.TOREPAIR;
+  const isDeclined=pin.approval==='declined';
+
+  const measChanged=origMeas!==null&&Object.keys({...origMeas,...meas}).some(k=>(origMeas[k]||'').toString()!==(meas[k]||'').toString());
+  const canSave=staging.length>=MIN;
+  const commentOk=isOther?comment.trim().length>=5:(!measChanged||comment.trim().length>=10);
+
+  const enterFixing=()=>{setMeas({...(pin.measurements||{})});setOrigMeas({...(pin.measurements||{})});setComment('');setStaging([]);setView('fixing');};
+  const enterDone=()=>{setMeas({...(pin.measurements||{})});setOrigMeas({...(pin.measurements||{})});setComment('');setStaging([]);setView('done');};
+
+  const addPhotos=files=>{const rem=MAX-staging.length;Array.from(files).slice(0,rem).forEach(f=>{const fr=new FileReader();fr.onload=ev=>setStaging(p=>[...p,ev.target.result]);fr.readAsDataURL(f);});};
+  const pickR=r=>{setSelR(r);setRtype(r.type);setMeas({});setView('fill');};
+
+  const saveSurvey=async()=>{
+    if(!canSave){alert('At least 1 photo required.');return;}
+    if(isOther&&comment.trim().length<5){alert('Other type requires a comment (min 5 characters).');return;}
+    if(hazard==='red'&&comment.trim().length<5){alert('Hazard level requires a comment (min 5 characters).');return;}
+    setSaving(true);
+    const rn=selR?selR.name:newName;
+    if(!selR)onAddRT({name:rn,type:ert});
+    // Strip the _justDuplicated marker so it doesn't persist on the saved pin
+    const {_justDuplicated,...pinClean}=pin;
+    const pinData={...pinClean,repairName:rn,repairType:ert,measurements:{...meas},createdBy:user.name};
+    const tagged=await Promise.all(staging.map(p=>wm(p,pinData,user.name)));
+    onSave({...pinData,comment,hazard,status:ST.TOREPAIR,approval:'pending',surveyPhotos:tagged,fixingPhotos:[],donePhotos:[]});
+    setSaving(false);
+  };
+
+  const savePhase=async(type)=>{
+    if(!canSave){alert('At least 1 photo required.');return;}
+    if(!commentOk){alert(isOther?'Comment required (min 5 chars).':'Measurement changed — comment of at least 10 chars required.');return;}
+    setSaving(true);
+    const pinForWm={...pin,measurements:{...meas}};
+    const tagged=await Promise.all(staging.map(p=>wm(p,pinForWm,user.name)));
+    let updated={...pin,measurements:{...meas}};
+    if(type==='fixing'){updated.fixingPhotos=tagged;updated.status=ST.FIXING;if(comment.trim())updated.fixingComment=comment.trim();}
+    else{updated.donePhotos=tagged;updated.status=ST.DONE;if(comment.trim())updated.doneComment=comment.trim();}
+    onSave(updated);setSaving(false);
+  };
+
+  const StagingArea=({label})=>(
+    <div style={{marginBottom:12}}>
+      {staging.length>0&&(
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
+          {staging.map((p,i)=>(
+            <div key={i} style={{position:'relative',width:60,height:48,borderRadius:6,overflow:'hidden',border:'1px solid '+C.border}}>
+              <img src={p} style={{width:'100%',height:'100%',objectFit:'cover'}} alt=""/>
+              <button onClick={()=>setDrawingMode(i)} style={{position:'absolute',bottom:1,right:1,background:'#2563eb99',border:'none',borderRadius:'50%',color:'#fff',width:18,height:18,cursor:'pointer',fontSize:10,display:'flex',alignItems:'center',justifyContent:'center',padding:0}} title="Draw on photo">✎</button>
+              <button onClick={()=>setStaging(s=>s.filter((_,j)=>j!==i))} style={{position:'absolute',top:1,right:1,background:'rgba(220,38,38,0.85)',border:'none',borderRadius:'50%',color:'#fff',width:16,height:16,cursor:'pointer',fontSize:9,display:'flex',alignItems:'center',justifyContent:'center'}}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {staging.length<MAX&&(
+        <label style={{display:'block',padding:'11px',border:'1px dashed '+C.borderDark,borderRadius:8,textAlign:'center',color:C.textDim,fontSize:12,cursor:'pointer',background:C.surface}}>
+          📷 {label} ({staging.length}/{MAX})
+          <input type="file" accept="image/*" capture="environment" multiple style={{display:'none'}} onChange={e=>addPhotos(e.target.files)}/>
+        </label>
+      )}
+      {staging.length>=MIN&&<div style={{fontSize:10,color:C.done,marginTop:4,textAlign:'center'}}>✓ Ready</div>}
+    </div>
+  );
+
+  const statusColor=isDeclined?C.declined:(SC[cur]||C.blue);
+  const hbc=HC[hazard]||C.border;
+
+  if(drawingMode!==null){
+    return<DrawingCanvas imageSrc={staging[drawingMode]} onClose={drawn=>{if(drawn){setStaging(s=>{const ns=[...s];ns[drawingMode]=drawn;return ns;});}setDrawingMode(null);}}/>;
+  }
+
+  return(
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:isMobile?'flex-end':'center',justifyContent:'center',zIndex:200,padding:isMobile?0:16}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:C.card,border:'1px solid '+(isDeclined?C.declined+'55':isNew?C.border:hbc+'55'),borderRadius:isMobile?'16px 16px 0 0':14,width:isMobile?'100%':390,maxWidth:'100%',maxHeight:isMobile?'94vh':'92vh',overflowY:'auto',boxShadow:'0 -10px 40px rgba(0,0,0,0.25)',paddingBottom:isMobile?'env(safe-area-inset-bottom)':0}}>
+
+        <div style={{padding:'13px 17px',display:'flex',justifyContent:'space-between',alignItems:'center',background:isDeclined?'#450a0a':C.navyDark,borderRadius:isMobile?'16px 16px 0 0':'14px 14px 0 0',position:'sticky',top:0,zIndex:2}}>
+          <div style={{display:'flex',alignItems:'center',gap:9}}>
+            <div style={{background:pCol(pin,user.name),borderRadius:'50%',width:26,height:26,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700,color:'#fff',fontFamily:'DM Mono'}}>{pin.id}</div>
+            <span style={{fontSize:14,fontWeight:700,color:'#fff',fontFamily:'Barlow Condensed',letterSpacing:0.5}}>PIN #{pin.id}</span>
+            {!isNew&&<span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:statusColor+'33',color:statusColor,letterSpacing:1,border:'1px solid '+statusColor+'55'}}>{isDeclined?'DECLINED':SL[cur]}</span>}
+            {isDeclined&&<span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:'#dc262633',color:'#fca5a5',letterSpacing:1}}>✗ DECLINED</span>}
+          </div>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            {!isNew&&!isClient&&<button onClick={()=>onDuplicate(pin.id)} title="Duplicate pin" style={{background:'none',border:'1px solid #2563eb40',borderRadius:6,color:'#93c5fd',cursor:'pointer',fontSize:11,padding:'3px 8px',fontFamily:'Barlow Condensed',fontWeight:700,letterSpacing:0.5}}>⎘ DUPLICATE</button>}
+            {!isNew&&!isClient&&<button onClick={()=>onTrash(pin.id)} style={{background:'none',border:'1px solid #ef444430',borderRadius:6,color:'#ef444488',cursor:'pointer',fontSize:11,padding:'3px 8px'}}>🗑</button>}
+            <button onClick={onClose} style={{background:'none',border:'none',color:'#64748b',fontSize:20,cursor:'pointer'}}>×</button>
+          </div>
+        </div>
+
+        <div style={{padding:'16px 17px'}}>
+          {view==='status'&&(
+            <>
+              <div style={{padding:'10px 14px',background:isDeclined?'#fef2f2':C.surface,borderRadius:8,border:'1px solid '+(isDeclined?'#fecaca':C.border),marginBottom:14}}>
+                <div style={{fontSize:14,fontWeight:700,color:isDeclined?C.declined:C.navyDark,marginBottom:3,fontFamily:'Barlow Condensed'}}>{pin.repairName}</div>
+                <div style={{fontSize:11,color:C.textDim,fontFamily:'DM Mono'}}>{getMeas(pin)}</div>
+                {pin.createdBy&&<div style={{fontSize:10,color:C.textMuted,marginTop:3}}>by {pin.createdBy}</div>}
+                {pin.hazard&&<div style={{fontSize:10,color:HC[pin.hazard],marginTop:4,fontWeight:700}}>{(HAZARDS.find(h=>h.id===pin.hazard)||{label:''}).label}</div>}
+                {pin.comment&&<div style={{fontSize:11,color:C.textDim,marginTop:5,fontStyle:'italic',borderTop:'1px solid '+C.border,paddingTop:5}}>"{pin.comment}"</div>}
+                {pin.fixingComment&&<div style={{fontSize:10,color:'#7c3aed',marginTop:3,fontStyle:'italic'}}>📐 "{pin.fixingComment}"</div>}
+                {pin.approvalComment&&<div style={{fontSize:10,color:C.declined,marginTop:4,fontStyle:'italic',padding:'6px 8px',background:'#fef2f2',borderRadius:6,border:'1px solid #fecaca'}}>Client: "{pin.approvalComment}"</div>}
+                {pin.approval&&pin.approval!=='pending'&&<div style={{fontSize:10,fontWeight:700,color:pin.approval==='approved'?C.done:C.declined,marginTop:4}}>{pin.approval==='approved'?'✓ Approved by client':'✗ Declined by client'}</div>}
+              </div>
+
+              <div style={{display:'flex',gap:4,marginBottom:14}}>
+                {[ST.TOREPAIR,ST.FIXING,ST.DONE].map((s,i)=>{
+                  const order=[ST.TOREPAIR,ST.FIXING,ST.DONE];
+                  const reached=order.indexOf(cur)>=order.indexOf(s);
+                  const col=isDeclined?C.declined:(reached?SC[s]:C.border);
+                  return(
+                    <div key={s} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3}}>
+                      <div style={{height:4,width:'100%',borderRadius:2,background:col}}/>
+                      <span style={{fontSize:8,color:col,fontFamily:'Barlow Condensed',fontWeight:reached?700:400}}>{SL[s].toUpperCase()}</span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {allPhotos.length>0&&(
+                <div style={{marginBottom:14}}>
+                  <div style={{fontSize:9,color:C.textMuted,marginBottom:6,letterSpacing:1.5,fontFamily:'Barlow Condensed',fontWeight:700}}>PHOTOS ({allPhotos.length})</div>
+                  <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                    {allPhotos.map((p,i)=>(
+                      <div key={i} onClick={()=>setPhotoNav({photos:allPhotos,startIdx:i})} style={{width:52,height:40,borderRadius:5,overflow:'hidden',border:'1px solid '+C.border,cursor:'pointer'}}>
+                        <img src={p} style={{width:'100%',height:'100%',objectFit:'cover'}} alt=""/>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {!isClient&&cur===ST.TOREPAIR&&!isDeclined&&(
+                <button onClick={enterFixing} style={{width:'100%',padding:'10px',background:'#8b5cf614',border:'1px solid #8b5cf6',borderRadius:8,color:'#7c3aed',fontWeight:700,fontSize:13,cursor:'pointer',marginBottom:6,fontFamily:'Barlow Condensed'}}>
+                  📸 Add Fixing Photos →
+                </button>
+              )}
+              {!isClient&&cur===ST.FIXING&&(
+                <button onClick={enterDone} style={{width:'100%',padding:'10px',background:'#22c55e14',border:'1px solid #22c55e',borderRadius:8,color:'#16a34a',fontWeight:700,fontSize:13,cursor:'pointer',marginBottom:6,fontFamily:'Barlow Condensed'}}>
+                  ✓ Add Done Photos →
+                </button>
+              )}
+              {/* Declined pin in fixing — allow finishing to done */}
+              {!isClient&&isDeclined&&cur===ST.FIXING&&(
+                <button onClick={enterDone} style={{width:'100%',padding:'10px',background:'#dc262614',border:'1px solid #dc2626',borderRadius:8,color:'#dc2626',fontWeight:700,fontSize:13,cursor:'pointer',marginBottom:6,fontFamily:'Barlow Condensed'}}>
+                  ✓ Finish Declined Repair →
+                </button>
+              )}
+              {cur===ST.DONE&&(
+                <div style={{textAlign:'center',padding:'10px',background:isDeclined?'#dc262610':'#22c55e10',border:'1px solid '+(isDeclined?'#dc262633':'#22c55e33'),borderRadius:8,color:isDeclined?'#dc2626':'#16a34a',fontSize:13,fontWeight:700,marginBottom:6,fontFamily:'Barlow Condensed'}}>{isDeclined?'✗ DECLINED — COMPLETED':'✓ COMPLETE'}</div>
+              )}
+            </>
+          )}
+
+          {view==='choose'&&(
+            <>
+              <div style={{display:'flex',gap:6,marginBottom:12}}>
+                <button style={{flex:1,padding:'7px',borderRadius:6,border:'1px solid '+C.blue,background:C.blueDim,color:C.blue,fontSize:12,cursor:'pointer',fontWeight:600}}>Repairs ({repairList.length})</button>
+                <button onClick={()=>setView('new')} style={{flex:1,padding:'7px',borderRadius:6,border:'1px solid '+C.border,background:'transparent',color:C.textDim,fontSize:12,cursor:'pointer'}}>+ New</button>
+              </div>
+              {repairList.map((r,i)=>(
+                <div key={i} onClick={()=>pickR(r)} style={{padding:'10px 12px',borderRadius:7,border:'1px solid '+C.border,background:C.surface,marginBottom:6,cursor:'pointer',transition:'border-color 0.1s'}}
+                  onMouseEnter={e=>e.currentTarget.style.borderColor=C.blue} onMouseLeave={e=>e.currentTarget.style.borderColor=C.border}>
+                  <div style={{fontSize:13,color:C.navyDark,fontWeight:600,fontFamily:'Barlow Condensed'}}>{r.name}</div>
+                  <div style={{fontSize:10,color:C.textMuted,fontFamily:'DM Mono',marginTop:2}}>{(RT.find(t=>t.id===r.type)||{label:''}).label}</div>
+                </div>
+              ))}
+            </>
+          )}
+
+          {view==='new'&&(
+            <>
+              <div style={{display:'flex',gap:6,marginBottom:12}}>
+                {repairList.length>0&&<button onClick={()=>setView('choose')} style={{flex:1,padding:'7px',borderRadius:6,border:'1px solid '+C.border,background:'transparent',color:C.textDim,fontSize:12,cursor:'pointer'}}>← Repairs</button>}
+                <button style={{flex:repairList.length>0?1:2,padding:'7px',borderRadius:6,border:'1px solid '+C.blue,background:C.blueDim,color:C.blue,fontSize:12,cursor:'pointer',fontWeight:600}}>+ New repair</button>
+              </div>
+              <label style={LS}>REPAIR NAME</label>
+              <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="e.g. Spalling, Joint, Crack, Gutter..." style={{...IS,marginBottom:14}}/>
+              <label style={LS}>REPAIR TYPE</label>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:5,marginBottom:16}}>
+                {RT.map(t=>(
+                  <button key={t.id} onClick={()=>setRtype(t.id)}
+                    style={{padding:'8px',borderRadius:6,border:'1.5px solid '+(rtype===t.id?C.blue:C.border),background:rtype===t.id?C.blueDim:C.card,color:rtype===t.id?C.blue:C.textDim,fontSize:12,fontWeight:rtype===t.id?700:400,cursor:'pointer',textAlign:'left',fontFamily:'Barlow Condensed'}}>
+                    {t.label}{t.id==='other'?' (no meas.)':''}
+                  </button>
+                ))}
+              </div>
+              <button disabled={!newName.trim()} onClick={()=>setView('fill')}
+                style={{width:'100%',padding:'9px',background:newName.trim()?C.navyDark:'#e5e7eb',border:'none',borderRadius:8,color:newName.trim()?'#fff':'#9ca3af',fontSize:13,fontWeight:700,cursor:newName.trim()?'pointer':'default',fontFamily:'Barlow Condensed'}}>
+                CONTINUE →
+              </button>
+            </>
+          )}
+
+          {view==='fill'&&(
+            <>
+              <div style={{padding:'8px 12px',background:C.surface,borderRadius:7,border:'1px solid '+C.border,marginBottom:14,display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+                <span style={{fontSize:13,color:C.navyDark,fontWeight:700,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontFamily:'Barlow Condensed'}}>{selR?selR.name:newName}</span>
+                <span style={{fontSize:10,color:C.textMuted,fontFamily:'DM Mono',flexShrink:0}}>{(RT.find(t=>t.id===ert)||{label:''}).label}</span>
+                <button onClick={()=>{setView(repairList.length>0?'choose':'new');setSelR(null);}} style={{background:'none',border:'none',color:C.textMuted,fontSize:12,cursor:'pointer',flexShrink:0}}>✎</button>
+              </div>
+
+              {rt&&!isOther&&(
+                <>
+                  <label style={LS}>MEASUREMENTS</label>
+                  <div style={{display:'grid',gridTemplateColumns:rt.fields.length===3?'1fr 1fr 1fr':'1fr 1fr',gap:6,marginBottom:6}}>
+                    {rt.fields.map(f=>(
+                      <div key={f.k}>
+                        <div style={{fontSize:9,color:C.textMuted,marginBottom:3}}>{f.l}</div>
+                        <input type="number" min="0" value={meas[f.k]||''} onChange={e=>{const v=e.target.value;setMeas(prev=>({...prev,[f.k]:v}));}} placeholder="0" style={{...IS,padding:'7px 8px'}}/>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{fontSize:12,color:C.blue,marginBottom:14,fontFamily:'DM Mono',padding:'5px 10px',background:C.blueDim,borderRadius:6,border:'1px solid '+C.blueBorder}}>= {rt.calc(meas)}</div>
+                </>
+              )}
+
+              {isOther&&(
+                <div style={{padding:'10px 14px',background:'#fef3c7',borderRadius:8,border:'1px solid #fde68a',marginBottom:14}}>
+                  <div style={{fontSize:11,color:'#92400e',fontWeight:600}}>Other — no measurements. Comment is required.</div>
+                </div>
+              )}
+
+              <label style={{...LS,color:isOther&&comment.trim().length<5?'#dc2626':C.textDim}}>
+                COMMENT {isOther?<span style={{color:'#dc2626'}}>* required (min 5 chars)</span>:'(optional)'}
+              </label>
+              <textarea value={comment} onChange={e=>setComment(e.target.value)}
+                placeholder={isOther?"Describe the issue, location, observations...":"Location, observations..."}
+                rows={isOther?3:2} style={{...IS,resize:'none',marginBottom:14}}/>
+
+              <label style={LS}>HAZARD LEVEL</label>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:5,marginBottom:14}}>
+                {HAZARDS.map(h=>(
+                  <button key={h.id} onClick={()=>setHazard(h.id)}
+                    style={{padding:'7px 4px',borderRadius:6,border:'1.5px solid '+(hazard===h.id?h.color:C.border),background:hazard===h.id?h.color+'15':C.card,color:hazard===h.id?h.color:C.textDim,fontSize:10,fontWeight:hazard===h.id?700:400,cursor:'pointer',textAlign:'center'}}>
+                    ● {h.label}
+                  </button>
+                ))}
+              </div>
+
+              <label style={LS}>PHOTOS (1–3)</label>
+              <StagingArea label="Add survey photos"/>
+
+              <button onClick={saveSurvey} disabled={saving||!canSave||(isOther&&comment.trim().length<5)}
+                style={{width:'100%',padding:'10px',borderRadius:8,border:'none',background:(canSave&&(!isOther||comment.trim().length>=5))?C.navyDark:'#e5e7eb',color:(canSave&&(!isOther||comment.trim().length>=5))?'#fff':'#9ca3af',fontWeight:700,fontSize:13,cursor:(canSave&&(!isOther||comment.trim().length>=5))?'pointer':'default',opacity:saving?0.6:1,fontFamily:'Barlow Condensed'}}>
+                {saving?'SAVING...':'SAVE PIN →'}
+              </button>
+            </>
+          )}
+
+          {view==='fixing'&&(
+            <>
+              <div style={{padding:'10px 14px',background:isDeclined?'#fef2f2':'#8b5cf610',borderRadius:8,border:'1px solid '+(isDeclined?'#fecaca':'#8b5cf633'),marginBottom:14}}>
+                <div style={{fontSize:13,fontWeight:700,color:isDeclined?C.declined:'#7c3aed',fontFamily:'Barlow Condensed'}}>{isDeclined?'FIXING DECLINED REPAIR':'FIXING PHOTOS'}</div>
+                <div style={{fontSize:11,color:isDeclined?'#dc262699':'#7c3aed99',marginTop:2}}>1–3 photos{!isOther?' · you can update the measurement if needed':''}</div>
+              </div>
+              {rt&&!isOther&&(
+                <>
+                  <label style={{...LS,color:measChanged?'#ea580c':C.textDim}}>MEASUREMENTS {measChanged&&<span style={{color:'#ea580c',fontWeight:700}}>● CHANGED</span>}</label>
+                  <div style={{display:'grid',gridTemplateColumns:rt.fields.length===3?'1fr 1fr 1fr':'1fr 1fr',gap:6,marginBottom:6}}>
+                    {rt.fields.map(f=>(
+                      <div key={f.k}><div style={{fontSize:9,color:C.textMuted,marginBottom:3}}>{f.l}</div>
+                      <input type="number" min="0" value={meas[f.k]||''} onChange={e=>{const v=e.target.value;setMeas(prev=>({...prev,[f.k]:v}));}} placeholder="0" style={{...IS,padding:'7px 8px',borderColor:measChanged?'#8b5cf6':C.border}}/></div>
+                    ))}
+                  </div>
+                  <div style={{fontSize:12,color:C.blue,marginBottom:12,fontFamily:'DM Mono',padding:'5px 10px',background:C.blueDim,borderRadius:6,border:'1px solid '+C.blueBorder}}>= {rt.calc(meas)}</div>
+                </>
+              )}
+              <label style={{...LS,color:measChanged&&comment.trim().length<10?'#dc2626':C.textDim}}>
+                COMMENT {measChanged?<span style={{color:'#dc2626'}}>* required (min 10 chars)</span>:'(optional)'}
+              </label>
+              <textarea value={comment} onChange={e=>setComment(e.target.value)} placeholder={measChanged?'Explain why the measurement changed...':'Notes for this phase...'} rows={2} style={{...IS,resize:'none',marginBottom:4,borderColor:measChanged&&comment.trim().length<10?'#dc2626':C.border}}/>
+              {measChanged&&comment.trim().length>0&&comment.trim().length<10&&<div style={{fontSize:10,color:'#dc2626',marginBottom:6}}>{10-comment.trim().length} more characters needed</div>}
+              <div style={{marginBottom:10}}/>
+              <label style={LS}>FIXING PHOTOS (1–3)</label>
+              <StagingArea label="Add fixing photos"/>
+              <div style={{display:'flex',gap:8,marginTop:4}}>
+                <button onClick={()=>setView('status')} style={{flex:1,padding:'9px',background:'transparent',border:'1px solid '+C.border,borderRadius:8,color:C.textDim,fontSize:13,cursor:'pointer'}}>← Back</button>
+                <button onClick={()=>savePhase('fixing')} disabled={saving||!canSave||!commentOk}
+                  style={{flex:2,padding:'10px',borderRadius:8,border:'none',background:(canSave&&commentOk)?(isDeclined?'#dc2626':'#7c3aed'):'#e5e7eb',color:(canSave&&commentOk)?'#fff':'#9ca3af',fontWeight:700,fontSize:13,cursor:'pointer',opacity:saving?0.6:1,fontFamily:'Barlow Condensed'}}>
+                  {saving?'SAVING...':'SAVE FIXING →'}
+                </button>
+              </div>
+            </>
+          )}
+
+          {view==='done'&&(
+            <>
+              <div style={{padding:'10px 14px',background:isDeclined?'#fef2f2':'#22c55e10',borderRadius:8,border:'1px solid '+(isDeclined?'#fecaca':'#22c55e33'),marginBottom:14}}>
+                <div style={{fontSize:13,fontWeight:700,color:isDeclined?C.declined:'#16a34a',fontFamily:'Barlow Condensed'}}>{isDeclined?'FINISHING DECLINED REPAIR':'DONE PHOTOS'}</div>
+                <div style={{fontSize:11,color:isDeclined?'#dc262699':'#16a34a99',marginTop:2}}>1–3 photos · document the completed repair</div>
+              </div>
+              {rt&&!isOther&&(
+                <>
+                  <label style={{...LS,color:measChanged?'#ea580c':C.textDim}}>MEASUREMENTS {measChanged&&<span style={{color:'#ea580c',fontWeight:700}}>● CHANGED</span>}</label>
+                  <div style={{display:'grid',gridTemplateColumns:rt.fields.length===3?'1fr 1fr 1fr':'1fr 1fr',gap:6,marginBottom:6}}>
+                    {rt.fields.map(f=>(
+                      <div key={f.k}><div style={{fontSize:9,color:C.textMuted,marginBottom:3}}>{f.l}</div>
+                      <input type="number" min="0" value={meas[f.k]||''} onChange={e=>{const v=e.target.value;setMeas(prev=>({...prev,[f.k]:v}));}} placeholder="0" style={{...IS,padding:'7px 8px',borderColor:measChanged?'#22c55e':C.border}}/></div>
+                    ))}
+                  </div>
+                  <div style={{fontSize:12,color:C.blue,marginBottom:12,fontFamily:'DM Mono',padding:'5px 10px',background:C.blueDim,borderRadius:6,border:'1px solid '+C.blueBorder}}>= {rt.calc(meas)}</div>
+                </>
+              )}
+              <label style={{...LS,color:measChanged&&comment.trim().length<10?'#dc2626':C.textDim}}>
+                COMMENT {measChanged?<span style={{color:'#dc2626'}}>* required (min 10 chars)</span>:'(optional)'}
+              </label>
+              <textarea value={comment} onChange={e=>setComment(e.target.value)} placeholder={measChanged?'Explain why the measurement changed...':'Final notes...'} rows={2} style={{...IS,resize:'none',marginBottom:4,borderColor:measChanged&&comment.trim().length<10?'#dc2626':C.border}}/>
+              {measChanged&&comment.trim().length>0&&comment.trim().length<10&&<div style={{fontSize:10,color:'#dc2626',marginBottom:6}}>{10-comment.trim().length} more characters needed</div>}
+              <div style={{marginBottom:10}}/>
+              <label style={LS}>DONE PHOTOS (1–3)</label>
+              <StagingArea label="Add done photos"/>
+              <div style={{display:'flex',gap:8,marginTop:4}}>
+                <button onClick={()=>setView('status')} style={{flex:1,padding:'9px',background:'transparent',border:'1px solid '+C.border,borderRadius:8,color:C.textDim,fontSize:13,cursor:'pointer'}}>← Back</button>
+                <button onClick={()=>savePhase('done')} disabled={saving||!canSave||!commentOk}
+                  style={{flex:2,padding:'10px',borderRadius:8,border:'none',background:(canSave&&commentOk)?(isDeclined?'#dc2626':'#16a34a'):'#e5e7eb',color:(canSave&&commentOk)?'#fff':'#9ca3af',fontWeight:700,fontSize:13,cursor:'pointer',opacity:saving?0.6:1,fontFamily:'Barlow Condensed'}}>
+                  {saving?'SAVING...':(isDeclined?'CLOSE DECLINED ✓':'MARK DONE ✓')}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+      {photoNav&&<PhotoNav photos={photoNav.photos} initIdx={photoNav.startIdx} onClose={()=>setPhotoNav(null)}/>}
+    </div>
+  );
+}
+
+// ── TRASH PANEL ───────────────────────────────────────────────────────────────
+function TrashPanel({project,onRestore,onClose}){
+  const trashed=project.elevations.flatMap((e,ei)=>(e.trash||[]).map(p=>({...p,_elev:e.name,_elevIdx:ei})));
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:250,padding:20}}>
+      <div style={{background:C.card,border:'1px solid '+C.border,borderRadius:14,width:460,maxWidth:'95vw',maxHeight:'80vh',display:'flex',flexDirection:'column',boxShadow:'0 20px 60px rgba(0,0,0,0.15)'}}>
+        <div style={{padding:'15px 20px',display:'flex',justifyContent:'space-between',alignItems:'center',background:C.navyDark,borderRadius:'14px 14px 0 0'}}>
+          <div style={{fontFamily:'Barlow Condensed',fontSize:16,fontWeight:700,color:'#fff'}}>🗑 TRASH</div>
+          <button onClick={onClose} style={{background:'none',border:'none',color:'#64748b',fontSize:20,cursor:'pointer'}}>×</button>
+        </div>
+        <div style={{flex:1,overflowY:'auto',padding:'12px 20px',background:C.surface}}>
+          {trashed.length===0
+            ?<div style={{textAlign:'center',color:C.textMuted,fontSize:13,padding:'32px'}}>Trash is empty</div>
+            :trashed.map((p,i)=>(
+              <div key={i} style={{background:C.card,border:'1px solid '+C.border,borderRadius:8,padding:'10px 14px',marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div>
+                  <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:3}}>
+                    <div style={{background:HC[p.hazard]||'#6b7280',borderRadius:'50%',width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:700,color:'#fff',fontFamily:'DM Mono'}}>{p.id}</div>
+                    <span style={{fontSize:13,fontWeight:600,color:C.navyDark,fontFamily:'Barlow Condensed'}}>{p.repairName||'Unnamed'}</span>
+                  </div>
+                  <div style={{fontSize:10,color:C.textMuted,paddingLeft:27}}>{p._elev} · {getMeas(p)} · {fmtDate(p.deletedAt)}</div>
+                </div>
+                <button onClick={()=>onRestore(p._elevIdx,p.id)} style={{background:C.blueDim,border:'1px solid '+C.blueBorder,borderRadius:7,color:C.blue,fontSize:11,fontWeight:700,padding:'5px 12px',cursor:'pointer',flexShrink:0,fontFamily:'Barlow Condensed'}}>RESTORE</button>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── SURVEY REVIEW (Client approval) ──────────────────────────────────────────
+function ReviewPinRow({pin,canApprove,showActions,onApprove,onDecline,onPhotoNav}){
+  const [showDecline,setShowDecline]=useState(false);
+  const [comment,setComment]=useState('');
+  const photos=pin.surveyPhotos||[];
+  const isDecl=pin.approval==='declined';
+  const isAppr=pin.approval==='approved';
+
+  const handleDecline=()=>{
+    onDecline(pin.id,comment);
+    setShowDecline(false);
+    setComment('');
+  };
+
+  return(
+    <div style={{padding:'14px 16px',background:isDecl?'#fef2f2':isAppr?'#f0fdf4':C.card,border:'1px solid '+(isDecl?'#fecaca':isAppr?'#bbf7d0':C.border),borderRadius:10,marginBottom:8}}>
+      <div style={{display:'flex',alignItems:'flex-start',gap:12}}>
+        <div style={{background:isDecl?C.declined:(HC[pin.hazard]||'#6b7280'),borderRadius:'50%',width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700,color:'#fff',fontFamily:'DM Mono',flexShrink:0}}>{pin.id}</div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}>
+            <span style={{fontSize:15,fontWeight:700,color:isDecl?C.declined:C.navyDark,fontFamily:'Barlow Condensed'}}>{pin.repairName}</span>
+            <span style={{fontSize:10,color:C.textMuted,fontFamily:'DM Mono'}}>{(RT.find(r=>r.id===pin.repairType)||{label:''}).label}</span>
+            <span style={{fontSize:10,color:C.blue,fontFamily:'DM Mono'}}>{getMeas(pin)}</span>
+            {pin.hazard&&<span style={{fontSize:9,fontWeight:700,color:HC[pin.hazard],background:HC[pin.hazard]+'18',padding:'2px 6px',borderRadius:6}}>{(HAZARDS.find(h=>h.id===pin.hazard)||{}).label}</span>}
+          </div>
+          <div style={{fontSize:11,color:C.textMuted,marginBottom:2}}>{pin._elev}{pin.createdBy?' · by '+pin.createdBy:''}</div>
+          {pin.comment&&<div style={{fontSize:12,color:C.textDim,marginTop:4,fontStyle:'italic'}}>"{pin.comment}"</div>}
+          {pin.approvalComment&&<div style={{fontSize:11,color:C.declined,marginTop:4,padding:'4px 8px',background:'#fef2f2',borderRadius:4,border:'1px solid #fecaca'}}>Declined: "{pin.approvalComment}"</div>}
+          {photos.length>0&&(
+            <div style={{display:'flex',gap:4,marginTop:8}}>
+              {photos.map((p,i)=>(
+                <div key={i} onClick={()=>onPhotoNav({photos,startIdx:i})} style={{width:48,height:36,borderRadius:4,overflow:'hidden',border:'1px solid '+C.border,cursor:'pointer'}}>
+                  <img src={p} style={{width:'100%',height:'100%',objectFit:'cover'}} alt=""/>
+                </div>
+              ))}
+            </div>
+          )}
+          {isAppr&&<div style={{fontSize:11,fontWeight:700,color:C.done,marginTop:8}}>✓ Approved</div>}
+          {isDecl&&<div style={{fontSize:11,fontWeight:700,color:C.declined,marginTop:8}}>✗ Declined</div>}
+        </div>
+        {showActions&&canApprove&&!isAppr&&!isDecl&&(
+          <div style={{display:'flex',flexDirection:'column',gap:4,flexShrink:0}}>
+            <button onClick={()=>onApprove(pin.id)} style={{padding:'6px 14px',borderRadius:6,border:'1px solid #22c55e',background:'#22c55e18',color:'#16a34a',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'Barlow Condensed',whiteSpace:'nowrap'}}>✓ Approve</button>
+            <button onClick={()=>setShowDecline(!showDecline)} style={{padding:'6px 14px',borderRadius:6,border:'1px solid #dc2626',background:'#dc262618',color:'#dc2626',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'Barlow Condensed',whiteSpace:'nowrap'}}>✗ Decline</button>
+          </div>
+        )}
+      </div>
+      {showDecline&&(
+        <div style={{marginTop:10,padding:'10px 12px',background:'#fff5f5',borderRadius:8,border:'1px solid #fecaca'}}>
+          <label style={{fontSize:10,color:C.declined,fontWeight:700,marginBottom:4,display:'block',letterSpacing:1}}>REASON FOR DECLINING (optional)</label>
+          <textarea value={comment} onChange={e=>setComment(e.target.value)} placeholder="Explain why this repair is declined..." rows={2} style={{...IS,resize:'none',marginBottom:8,borderColor:'#fecaca'}}/>
+          <div style={{display:'flex',gap:6}}>
+            <button onClick={()=>setShowDecline(false)} style={{flex:1,padding:'7px',borderRadius:6,border:'1px solid '+C.border,background:'transparent',color:C.textDim,fontSize:12,cursor:'pointer'}}>Cancel</button>
+            <button onClick={handleDecline} style={{flex:2,padding:'7px',borderRadius:6,border:'none',background:'#dc2626',color:'#fff',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'Barlow Condensed'}}>CONFIRM DECLINE</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SurveyReview({project,user,onApprove,onDecline,onClose}){
+  const [photoNav,setPhotoNav]=useState(null);
+  const canApprove=user.role==='admin'||user.role==='client';
+
+  const allPins=project.elevations.flatMap(e=>(e.pins||[]).map(p=>({...p,_elev:e.name})));
+  const surveyPins=allPins.filter(p=>p.status===ST.TOREPAIR);
+  const declinedPins=allPins.filter(p=>p.approval==='declined');
+  const approvedPins=allPins.filter(p=>p.approval==='approved'&&p.status===ST.TOREPAIR);
+
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:250,padding:16}}>
+      <div style={{background:C.bg,border:'1px solid '+C.border,borderRadius:14,width:'100%',maxWidth:700,maxHeight:'92vh',display:'flex',flexDirection:'column',boxShadow:'0 20px 60px rgba(0,0,0,0.2)'}}>
+        <div style={{padding:'14px 20px',display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0,background:C.navyDark,borderRadius:'14px 14px 0 0'}}>
+          <div>
+            <div style={{fontFamily:'Barlow Condensed',fontSize:20,fontWeight:800,color:'#fff'}}>📋 Survey Review</div>
+            <div style={{fontSize:11,color:'#475569',marginTop:2}}>{project.name} · {surveyPins.length} pending · {approvedPins.length} approved · {declinedPins.length} declined</div>
+          </div>
+          <button onClick={onClose} style={{background:'none',border:'none',color:'#64748b',fontSize:22,cursor:'pointer'}}>×</button>
+        </div>
+        <div style={{flex:1,overflowY:'auto',padding:'16px 20px'}}>
+          {surveyPins.filter(p=>p.approval==='pending'||!p.approval).length>0&&(
+            <>
+              <div style={{fontSize:10,color:C.textMuted,letterSpacing:2,marginBottom:10,fontFamily:'Barlow Condensed',fontWeight:700}}>PENDING REVIEW ({surveyPins.filter(p=>p.approval==='pending'||!p.approval).length})</div>
+              {surveyPins.filter(p=>p.approval==='pending'||!p.approval).map(p=><ReviewPinRow key={p.id} pin={p} showActions={true} canApprove={canApprove} onApprove={onApprove} onDecline={onDecline} onPhotoNav={setPhotoNav}/>)}
+            </>
+          )}
+          {approvedPins.length>0&&(
+            <>
+              <div style={{fontSize:10,color:C.done,letterSpacing:2,marginBottom:10,marginTop:20,fontFamily:'Barlow Condensed',fontWeight:700}}>APPROVED ({approvedPins.length})</div>
+              {approvedPins.map(p=><ReviewPinRow key={p.id} pin={p} showActions={false} canApprove={canApprove} onApprove={onApprove} onDecline={onDecline} onPhotoNav={setPhotoNav}/>)}
+            </>
+          )}
+          {declinedPins.length>0&&(
+            <>
+              <div style={{fontSize:10,color:C.declined,letterSpacing:2,marginBottom:10,marginTop:20,fontFamily:'Barlow Condensed',fontWeight:700}}>DECLINED ({declinedPins.length})</div>
+              {declinedPins.map(p=><ReviewPinRow key={p.id} pin={p} showActions={false} canApprove={canApprove} onApprove={onApprove} onDecline={onDecline} onPhotoNav={setPhotoNav}/>)}
+            </>
+          )}
+          {surveyPins.length===0&&declinedPins.length===0&&approvedPins.length===0&&(
+            <div style={{textAlign:'center',color:C.textMuted,fontSize:13,padding:'40px'}}>No survey pins to review</div>
+          )}
+        </div>
+      </div>
+      {photoNav&&<PhotoNav photos={photoNav.photos} initIdx={photoNav.startIdx} onClose={()=>setPhotoNav(null)}/>}
+    </div>
+  );
+}
+
+// ── COMMENT CELL ──────────────────────────────────────────────────────────────
+function CommentCell({pin}){
+  const [open,setOpen]=useState(false);const [pos,setPos]=useState({top:0,left:0});const triggerRef=useRef(null);
+  const stages=[
+    {key:'comment',label:'To Repair',color:'#3b82f6',bg:'#eff6ff',val:pin.comment&&pin.comment.trim()?pin.comment.trim():null},
+    {key:'fixingComment',label:'Fixing',color:'#7c3aed',bg:'#f5f3ff',val:pin.fixingComment&&pin.fixingComment.trim()?pin.fixingComment.trim():null},
+    {key:'doneComment',label:'Done',color:'#16a34a',bg:'#f0fdf4',val:pin.doneComment&&pin.doneComment.trim()?pin.doneComment.trim():null},
+    {key:'approvalComment',label:'Client',color:'#dc2626',bg:'#fef2f2',val:pin.approvalComment&&pin.approvalComment.trim()?pin.approvalComment.trim():null},
+  ];
+  const active=stages.filter(s=>s.val&&s.val.trim());
+  if(!active.length)return<span style={{color:'#9ca3af',fontSize:11}}>—</span>;
+  const toggle=()=>{if(!open&&triggerRef.current){const r=triggerRef.current.getBoundingClientRect();const spaceBelow=window.innerHeight-r.bottom;const top=spaceBelow>200?r.bottom+6:r.top-6;const left=Math.min(r.left,window.innerWidth-310);setPos({top,left,flipUp:spaceBelow<=200});}setOpen(o=>!o);};
+  useEffect(()=>{if(!open)return;const handler=e=>{if(triggerRef.current&&!triggerRef.current.contains(e.target))setOpen(false);};document.addEventListener('mousedown',handler);return()=>document.removeEventListener('mousedown',handler);},[open]);
+  return(
+    <div ref={triggerRef} style={{position:'relative',display:'inline-block'}}>
+      <div style={{display:'flex',flexWrap:'wrap',gap:3,cursor:'pointer',alignItems:'center'}} onClick={toggle}>
+        {active.map(s=>(<span key={s.key} style={{fontSize:9,fontWeight:700,color:s.color,background:s.bg,padding:'2px 7px',borderRadius:4,fontFamily:'Barlow Condensed',letterSpacing:0.3,border:'1px solid '+s.color+'44',whiteSpace:'nowrap'}}>{s.label}</span>))}
+        <span style={{fontSize:9,color:'#9ca3af',marginLeft:2}}>{open?'▲':'▼'}</span>
+      </div>
+      {open&&ReactDOM.createPortal(
+        <div onMouseDown={e=>e.stopPropagation()} style={{position:'fixed',top:pos.flipUp?undefined:pos.top,bottom:pos.flipUp?(window.innerHeight-pos.top+4):undefined,left:pos.left,zIndex:9999,background:'#ffffff',border:'1px solid #e5e7eb',borderRadius:10,padding:'12px 14px',minWidth:240,maxWidth:320,boxShadow:'0 12px 32px rgba(0,0,0,0.18)',fontFamily:'Barlow,sans-serif'}}>
+          {active.map((s,i)=>(<div key={s.key} style={{marginBottom:i<active.length-1?10:0}}><div style={{fontSize:9,fontWeight:700,color:s.color,marginBottom:4,fontFamily:'Barlow Condensed',letterSpacing:1,display:'flex',alignItems:'center',gap:5}}><span style={{display:'inline-block',width:8,height:8,borderRadius:'50%',background:s.color,flexShrink:0}}/>{s.label.toUpperCase()}</div><div style={{fontSize:12,color:'#374151',lineHeight:1.55,whiteSpace:'pre-wrap',paddingLeft:13}}>{s.val}</div></div>))}
+        </div>,document.body
+      )}
+    </div>
+  );
+}
+
+// ── SUMMARY TABLE ─────────────────────────────────────────────────────────────
+function SummaryTable({project,onClose,user}){
+  const [photoNav,setPhotoNav]=useState(null);const [filter,setFilter]=useState('all');
+  const [prices,setPrices]=useState({});
+  const canPrice=user.role==='admin'||user.role==='manager';
+  useEffect(()=>{dbGetPrices(project.id).then(p=>setPrices(p||{}));},[project.id]);
+  const savePrice=async(name,val)=>{const np={...prices,[name]:val};setPrices(np);await dbSavePrices(project.id,np);};
+
+  const allPins=project.elevations.flatMap(e=>(e.pins||[]).map(p=>({...p,_elev:e.name})));
+  const types=[...new Set(allPins.map(p=>p.repairType))].filter(Boolean);
+  const filtered=filter==='all'?allPins:allPins.filter(p=>p.repairType===filter);
+
+  const totalsMap={};
+  filtered.forEach(pin=>{const r=RT.find(r=>r.id===pin.repairType);if(!r)return;const key=pin.repairName+'__'+pin.repairType;if(!totalsMap[key])totalsMap[key]={repairName:pin.repairName,typeLabel:r.label,unit:r.unit,vals:[],count:0};totalsMap[key].count++;const num=parseFloat(r.calc(pin.measurements||{}));if(!isNaN(num)&&num>0)totalsMap[key].vals.push(num);});
+
+  const grandTotal=Object.entries(totalsMap).reduce((s,[,v])=>{const q=v.vals.reduce((a,b)=>a+b,0);const p=parseFloat(prices[v.repairName]||0);return s+q*p;},0);
+
+  const TH={padding:'9px 12px',textAlign:'left',fontSize:10,fontWeight:700,color:'#94a3b8',borderBottom:'1px solid rgba(255,255,255,0.08)',whiteSpace:'nowrap',letterSpacing:1,fontFamily:'Barlow Condensed'};
+  const TD={padding:'9px 12px',fontSize:12,borderBottom:'1px solid '+C.border,verticalAlign:'middle'};
+
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:250,padding:16}}>
+      <div style={{background:C.card,border:'1px solid '+C.border,borderRadius:14,width:'100%',maxWidth:1060,maxHeight:'92vh',display:'flex',flexDirection:'column',boxShadow:'0 20px 60px rgba(0,0,0,0.2)'}}>
+        <div style={{padding:'14px 20px',display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0,background:C.navyDark,borderRadius:'14px 14px 0 0'}}>
+          <div>
+            <div style={{fontFamily:'Barlow Condensed',fontSize:20,fontWeight:800,color:'#fff'}}>{project.name}</div>
+            <div style={{fontSize:11,color:'#475569',marginTop:2}}>Quick Survey · {new Date().toLocaleDateString('en-NZ')} · {user.name}</div>
+          </div>
+          <div style={{display:'flex',gap:10,alignItems:'center'}}>
+            {grandTotal>0&&canPrice&&(
+              <div style={{padding:'6px 14px',background:'rgba(37,99,235,0.2)',border:'1px solid rgba(37,99,235,0.4)',borderRadius:8}}>
+                <div style={{fontSize:9,color:'#93c5fd',letterSpacing:1.5,fontFamily:'Barlow Condensed',fontWeight:700}}>TOTAL ESTIMATE</div>
+                <div style={{fontSize:20,fontWeight:800,color:'#fff',fontFamily:'Barlow Condensed'}}>$ {grandTotal.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+              </div>
+            )}
+            <select value={filter} onChange={e=>setFilter(e.target.value)} style={{background:'rgba(255,255,255,0.08)',border:'1px solid rgba(255,255,255,0.15)',borderRadius:7,padding:'6px 10px',color:'#fff',fontSize:12,outline:'none',cursor:'pointer'}}>
+              <option value="all" style={{background:'#111'}}>All types</option>
+              {types.map(t=><option key={t} value={t} style={{background:'#111'}}>{(RT.find(r=>r.id===t)||{label:t}).label}</option>)}
+            </select>
+            <button onClick={onClose} style={{background:'none',border:'none',color:'#64748b',fontSize:22,cursor:'pointer'}}>×</button>
+          </div>
+        </div>
+        <div style={{flex:1,overflowY:'auto',padding:'16px 20px',background:C.bg}}>
+          {project.elevations.map((el,ei)=>{
+            const ePins=filtered.filter(p=>p._elev===el.name);if(!ePins.length)return null;
+            return(
+              <div key={ei} style={{marginBottom:24}}>
+                <div style={{fontSize:12,fontWeight:700,color:C.navyDark,marginBottom:8,display:'flex',alignItems:'center',gap:8,fontFamily:'Barlow Condensed'}}>
+                  <span style={{fontSize:9,color:C.blue,background:C.blueDim,padding:'2px 8px',borderRadius:4,letterSpacing:1,border:'1px solid '+C.blueBorder}}>ELEVATION</span>
+                  {el.name}
+                  <span style={{fontSize:10,color:C.textMuted,fontFamily:'DM Mono'}}>{ePins.length} pin{ePins.length!==1?'s':''}</span>
+                </div>
+                <div style={{background:C.card,border:'1px solid '+C.border,borderRadius:8,overflow:'hidden',boxShadow:'0 1px 3px rgba(0,0,0,0.05)'}}>
+                  <table style={{width:'100%',borderCollapse:'collapse'}}>
+                    <thead><tr style={{background:C.navyDark}}>{['ID','Repair','Type','Measurement','Status','Hazard','Approval','Photos','Notes'].map(h=><th key={h} style={TH}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {ePins.map(pin=>{
+                        const allP=[...(pin.surveyPhotos||[]),...(pin.fixingPhotos||[]),...(pin.donePhotos||[])];
+                        const isDecl=pin.approval==='declined';
+                        const sc=isDecl?C.declined:(SC[pin.status]||C.textMuted);
+                        return(
+                          <tr key={pin.id} style={{background:isDecl?'#fef2f2':'transparent'}}>
+                            <td style={TD}><div style={{background:isDecl?C.declined:(HC[pin.hazard]||'#6b7280'),borderRadius:'50%',width:22,height:22,display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:700,color:'#fff',fontFamily:'DM Mono'}}>{pin.id}</div></td>
+                            <td style={{...TD,fontWeight:600,color:isDecl?C.declined:C.navyDark,fontFamily:'Barlow Condensed',fontSize:13}}>{pin.repairName||'—'}</td>
+                            <td style={{...TD,fontFamily:'DM Mono',color:C.textDim,fontSize:11}}>{(RT.find(r=>r.id===pin.repairType)||{label:'—'}).label}</td>
+                            <td style={{...TD,fontFamily:'DM Mono',color:C.blue,fontSize:11}}>{getMeas(pin)}</td>
+                            <td style={TD}><span style={{fontSize:10,fontWeight:700,color:sc,background:sc+'18',padding:'2px 8px',borderRadius:8,fontFamily:'Barlow Condensed'}}>{SL[pin.status]||'—'}</span></td>
+                            <td style={TD}>{pin.hazard?<span style={{fontSize:10,fontWeight:700,color:HC[pin.hazard],background:HC[pin.hazard]+'18',padding:'2px 6px',borderRadius:6}}>{(HAZARDS.find(h=>h.id===pin.hazard)||{label:''}).label}</span>:<span style={{color:C.textMuted}}>—</span>}</td>
+                            <td style={TD}>{pin.approval&&pin.approval!=='pending'?<span style={{fontSize:10,fontWeight:700,color:pin.approval==='approved'?C.done:C.declined,background:(pin.approval==='approved'?C.done:C.declined)+'18',padding:'2px 6px',borderRadius:6}}>{pin.approval==='approved'?'✓ Approved':'✗ Declined'}</span>:<span style={{color:C.textMuted,fontSize:10}}>Pending</span>}</td>
+                            <td style={TD}>{allP.length>0?(
+                              <div style={{display:'flex',alignItems:'center',gap:4}}>
+                                <div onClick={()=>setPhotoNav({photos:allP,startIdx:0})} style={{width:40,height:30,borderRadius:4,overflow:'hidden',cursor:'pointer',border:'1px solid '+C.border,flexShrink:0}}>
+                                  <img src={allP[0]} style={{width:'100%',height:'100%',objectFit:'cover'}} alt=""/>
+                                </div>
+                                {allP.length>1&&<span onClick={()=>setPhotoNav({photos:allP,startIdx:0})} style={{fontSize:10,color:C.blue,cursor:'pointer'}}>+{allP.length-1}</span>}
+                              </div>
+                            ):<span style={{color:C.textMuted,fontSize:11}}>—</span>}</td>
+                            <td style={{...TD,maxWidth:180,minWidth:120}}><CommentCell pin={pin}/></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
+          {Object.keys(totalsMap).length>0&&canPrice&&(
+            <div style={{padding:'16px',background:C.card,border:'1px solid '+C.border,borderRadius:10,boxShadow:'0 1px 3px rgba(0,0,0,0.05)'}}>
+              <div style={{fontSize:10,color:C.textDim,letterSpacing:1.5,marginBottom:12,fontFamily:'Barlow Condensed',fontWeight:700}}>QUANTITIES & PRICING</div>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:10}}>
+                {Object.entries(totalsMap).map(([k,v])=>{
+                  const qty=v.vals.reduce((a,b)=>a+b,0);const price=parseFloat(prices[v.repairName]||'');const subtotal=isNaN(price)?0:qty*price;
+                  return(
+                    <div key={k} style={{background:C.surface,borderRadius:9,padding:'12px 14px',border:'1px solid '+C.border}}>
+                      <div style={{fontSize:13,color:C.navyDark,fontWeight:700,fontFamily:'Barlow Condensed',marginBottom:1}}>{v.repairName}</div>
+                      <div style={{fontSize:9,color:C.textMuted,fontFamily:'DM Mono',marginBottom:8}}>{v.typeLabel} · {v.count} item{v.count!==1?'s':''}</div>
+                      <div style={{fontSize:20,fontWeight:800,color:C.blue,fontFamily:'Barlow Condensed',marginBottom:8}}>{qty>0?qty.toFixed(3):0} <span style={{fontSize:10,color:C.textMuted}}>{v.unit}</span></div>
+                      <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+                        <span style={{fontSize:11,color:C.textDim}}>$</span>
+                        <input type="number" min="0" step="0.01" placeholder="Price / unit" value={prices[v.repairName]||''} onChange={e=>savePrice(v.repairName,e.target.value)}
+                          style={{flex:1,background:C.card,border:'1px solid '+C.borderDark,borderRadius:5,padding:'5px 7px',color:C.navyDark,fontSize:12,outline:'none',fontFamily:'DM Mono'}}/>
+                        <span style={{fontSize:9,color:C.textMuted}}>/{v.unit}</span>
+                      </div>
+                      {subtotal>0&&<div style={{fontSize:14,fontWeight:700,color:C.navyDark,fontFamily:'Barlow Condensed',marginTop:6,paddingTop:6,borderTop:'1px solid '+C.border}}>= $ {subtotal.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>}
+                    </div>
+                  );
+                })}
+              </div>
+              {grandTotal>0&&(
+                <div style={{marginTop:14,paddingTop:14,borderTop:'1px solid '+C.border,display:'flex',justifyContent:'flex-end',alignItems:'center',gap:16}}>
+                  <div style={{fontSize:12,color:C.textDim}}>Grand total estimate</div>
+                  <div style={{fontFamily:'Barlow Condensed',fontSize:30,fontWeight:800,color:C.navyDark}}>$ {grandTotal.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+                </div>
+              )}
+            </div>
+          )}
+          {!filtered.length&&<div style={{textAlign:'center',color:C.textMuted,fontSize:13,padding:'40px'}}>No pins to show</div>}
+        </div>
+      </div>
+      {photoNav&&<PhotoNav photos={photoNav.photos} initIdx={photoNav.startIdx} onClose={()=>setPhotoNav(null)}/>}
+    </div>
+  );
+}
+
+// ── PIN MARKER ────────────────────────────────────────────────────────────────
+const Marker=memo(function Marker({pin,selected,isMoving,isDeleting,onClick,x,y,currentUser}){
+  const isDeclined=pin.approval==='declined';
+  const headColor=isDeclined?C.declined:pCol(pin,currentUser);
+  const stemColor=isDeclined?C.declined:(SC[pin.status]||'#6b7280');
+  const isOther=pin.createdBy&&pin.createdBy!==currentUser;
+  const sz=isMoving||selected||isDeleting?28:22;
+  const handle=e=>{e.stopPropagation();onClick(pin.id);};
+  return(
+    <div onClick={handle} onTouchEnd={e=>{e.stopPropagation();e.preventDefault();onClick(pin.id);}}
+      style={{position:'absolute',left:x,top:y,transform:'translate(-50%, -100%)',cursor:isDeleting?'not-allowed':'pointer',zIndex:10,userSelect:'none',touchAction:'manipulation'}}>
+      <div style={{padding:12,margin:-12,pointerEvents:'auto'}}>
+        <div style={{display:'flex',flexDirection:'column',alignItems:'center',pointerEvents:'none'}}>
+          <div style={{background:isDeleting?'#dc2626':isMoving?'#ea580c':selected?'#fff':headColor,color:isDeleting||isMoving?'#fff':selected?headColor:'#fff',border:'2px solid '+(isDeleting?'#dc2626':isMoving?'#ea580c':headColor),borderRadius:'50%',width:sz,height:sz,display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:700,fontFamily:'DM Mono',boxShadow:selected?'0 0 0 3px '+headColor+'44,0 2px 10px rgba(0,0,0,0.35)':'0 2px 8px rgba(0,0,0,0.35)',transition:'all 0.15s',opacity:isOther&&!selected&&!isMoving&&!isDeleting?0.55:1}}>{isDeleting?'✕':pin.id}</div>
+          <div style={{width:2,height:10,background:stemColor,opacity:isOther?0.4:0.95}}/>
+          <div style={{width:7,height:7,borderRadius:'50%',background:stemColor,boxShadow:'0 1px 4px '+stemColor+'88',opacity:isOther?0.4:1}}/>
+        </div>
+      </div>
+    </div>
+  );
+},(prev,next)=>{
+  // Skip re-render when pin data and visual state haven't changed
+  return prev.pin===next.pin
+    &&prev.selected===next.selected
+    &&prev.isMoving===next.isMoving
+    &&prev.isDeleting===next.isDeleting
+    &&prev.x===next.x
+    &&prev.y===next.y
+    &&prev.currentUser===next.currentUser
+    &&prev.onClick===next.onClick;
+});
+
+function Toast({msg}){
+  return<div style={{position:'fixed',bottom:60,left:'50%',transform:'translateX(-50%)',background:C.navyDark,border:'1px solid #1e3a5f',borderRadius:20,padding:'8px 20px',fontSize:12,color:'#e2e8f0',zIndex:500,pointerEvents:'none',boxShadow:'0 4px 20px rgba(0,0,0,0.2)'}}>{msg}</div>;
+}
+
+// ── MAIN APP ─────────────────────────────────────────────────────────────────
+function App(){
+  const isMobile=useIsMobile();
+  const [isOnline,setIsOnline]=useState(typeof navigator==='undefined'||navigator.onLine!==false);
+  useEffect(()=>{
+    const on=()=>setIsOnline(true);
+    const off=()=>setIsOnline(false);
+    window.addEventListener('online',on);
+    window.addEventListener('offline',off);
+    return()=>{window.removeEventListener('online',on);window.removeEventListener('offline',off);};
+  },[]);
+  const [user,setUser]=useState(()=>{try{const s=localStorage.getItem(SKEY_USER);return s?JSON.parse(s):null;}catch{return null;}});
+  const [screen,setScreen]=useState('home');
+  const [project,setProject]=useState(null);
+  const [rl,setRl]=useState([]);
+  const [ae,setAe]=useState(0);
+  const [mode,setMode]=useState('pan');
+  const [movId,setMovId]=useState(null);
+  const [dupFromId,setDupFromId]=useState(null); // pin id to duplicate on next canvas tap
+  const [zoom,setZoom]=useState(1);
+  const [pan_,setPan]=useState({x:0,y:0});
+  const [selPin,setSelPin]=useState(null);
+  const [modal,setModal]=useState(null);
+  const [nid,setNid]=useState(1);
+  const [csz,setCsz]=useState({w:800,h:600});
+  const [imgDims,setImgDims]=useState({w:1,h:1}); // live image dimensions via ResizeObserver — no layout thrash on every render
+  const [showT,setShowT]=useState(false);
+  const [showTrash,setShowTrash]=useState(false);
+  const [showMore,setShowMore]=useState(false);
+  const [showIndex,setShowIndex]=useState(false);
+  const [showReview,setShowReview]=useState(false);
+  const [showRole,setShowRole]=useState(false);
+  const [indexSearch,setIndexSearch]=useState('');
+  const [toast,setToast]=useState(null);
+  const cRef=useRef(null);
+  const iRef=useRef(null);
+  const undoStackRef=useRef([]); // stack of undo actions — last entry is most recent
+
+  const gestureRef=useRef({panning:false,pinching:false,tapCandidate:false,moved:false,startX:0,startY:0,startPanX:0,startPanY:0,startDist:0,startZoom:1,startMidX:0,startMidY:0,tapPos:null});
+
+  // Canvas ResizeObserver
+  useEffect(()=>{
+    const obs=new ResizeObserver(entries=>{for(const e of entries)setCsz({w:e.contentRect.width,h:e.contentRect.height});});
+    if(cRef.current)obs.observe(cRef.current);
+    return()=>obs.disconnect();
+  },[]);
+
+  // Image ResizeObserver — updates only when image actually resizes, not on every render
+  useEffect(()=>{
+    const img=iRef.current;
+    if(!img)return;
+    const update=()=>setImgDims({w:img.offsetWidth||1,h:img.offsetHeight||1});
+    update();
+    const obs=new ResizeObserver(update);
+    obs.observe(img);
+    return()=>obs.disconnect();
+  },[project,ae,screen]);
+
+  // Debounced persistence — 400ms idle before hitting IndexedDB
+  const [persistDebounced,persistFlush]=useDebouncedCallback((p)=>{dbPut(p).catch(e=>console.error('persist failed',e));},400);
+
+  // Flush pending writes before page unload
+  useEffect(()=>{
+    const h=()=>{persistFlush && persistFlush();};
+    window.addEventListener('beforeunload',h);
+    return()=>window.removeEventListener('beforeunload',h);
+  },[persistFlush]);
+
+  const saveUser=u=>{setUser(u);localStorage.setItem(SKEY_USER,JSON.stringify(u));};
+  const switchRole=r=>{const nu={...user,role:r};saveUser(nu);};
+  const switchUser=u=>{const nu={...user,name:u.name,company:u.company};saveUser(nu);};
+  const logout=()=>{localStorage.removeItem(SKEY_USER);setUser(null);setScreen('home');setProject(null);};
+
+  if(!user)return<UserSetup onDone={u=>saveUser(u)}/>;
+
+  const showToast=msg=>{setToast(msg);setTimeout(()=>setToast(null),2200);};
+  const persist=p=>persistDebounced(p);
+  const persistNow=p=>{persistFlush(p);}; // for immediate writes like project creation
+  const openProject=p=>{setProject(p);setRl(p.repairList||[]);const maxId=p.elevations.flatMap(e=>[...(e.pins||[]),...(e.trash||[])]).reduce((m,pi)=>Math.max(m,pi.id),0);setNid(maxId+1);setAe(0);setMode('pan');setScreen('survey');undoStackRef.current=[];};
+  const createProject=(name,names)=>{const p={id:Date.now().toString(),name,createdAt:new Date().toISOString(),user:user.name,company:user.company,repairList:[],elevations:names.map(n=>({name:n,img:null,pins:[],trash:[]}))};persistNow(p);openProject(p);};
+
+  const el=project?.elevations[ae];
+  // Elevation updater — updates React state immediately, persists with debounce
+  const upd=(i,fn)=>{setProject(p=>{const e=[...p.elevations];e[i]=fn(e[i]);const np={...p,elevations:e};persist(np);return np;});};
+  const onPhoto=e=>{const f=e.target.files[0];if(!f)return;const fr=new FileReader();fr.onload=async ev=>{const b64=await compress(ev.target.result,1600,0.7);upd(ae,el=>({...el,img:b64}));setZoom(1);setPan({x:0,y:0});};fr.readAsDataURL(f);};
+
+  const isClient=user.role==='client';
+  const canEdit=!isClient;
+  const canPin=canEdit;
+
+  // Push an undo action — cap stack at 20
+  const pushUndo=(action)=>{
+    undoStackRef.current.push(action);
+    if(undoStackRef.current.length>20)undoStackRef.current.shift();
+  };
+  const undo=()=>{
+    const action=undoStackRef.current.pop();
+    if(!action){showToast('Nothing to undo');return;}
+    action();
+  };
+
+  // ── Move pin: improved two-step ──
+  const modeRef=useRef(mode);useEffect(()=>{modeRef.current=mode;},[mode]);
+  const movIdRef=useRef(movId);useEffect(()=>{movIdRef.current=movId;},[movId]);
+  const dupFromIdRef=useRef(dupFromId);useEffect(()=>{dupFromIdRef.current=dupFromId;},[dupFromId]);
+
+  const clickCoords=e=>{
+    if(el?.img){const img=iRef.current;if(!img)return null;const r=img.getBoundingClientRect();const x=(e.clientX-r.left)/r.width*100,y=(e.clientY-r.top)/r.height*100;if(x<0||x>100||y<0||y>100)return null;return{x,y};}
+    else{const c=cRef.current;if(!c)return null;const r=c.getBoundingClientRect();return{x:(e.clientX-r.left)/r.width*100,y:(e.clientY-r.top)/r.height*100};}
+  };
+  const tapCoordsFromClient=(cx,cy)=>{
+    if(el?.img){const img=iRef.current;if(!img)return null;const r=img.getBoundingClientRect();const x=(cx-r.left)/r.width*100,y=(cy-r.top)/r.height*100;if(x<0||x>100||y<0||y>100)return null;return{x,y};}
+    else{const c=cRef.current;if(!c)return null;const r=c.getBoundingClientRect();return{x:(cx-r.left)/r.width*100,y:(cy-r.top)/r.height*100};}
+  };
+
+  const placeOrHandleCoords=coords=>{
+    const m=modeRef.current;
+    const mv=movIdRef.current;
+    const dup=dupFromIdRef.current;
+
+    // Duplicate takes priority — if we're waiting to place a clone, next tap lands the clone
+    if(dup!==null&&canPin){
+      const source=el?.pins.find(p=>p.id===dup);
+      if(!source){setDupFromId(null);return;}
+      // Carry everything over EXCEPT photos — photos are location-specific and must be retaken
+      const clone={
+        ...source,
+        id:nid,
+        x:coords.x,y:coords.y,
+        createdBy:user.name,
+        status:ST.TOREPAIR,
+        approval:'pending',
+        approvalComment:'',
+        fixingComment:'',
+        doneComment:'',
+        surveyPhotos:[],
+        fixingPhotos:[],
+        donePhotos:[],
+        _justDuplicated:true, // flag so the modal opens in the survey-photo-taking view
+      };
+      const elevIdx=ae;
+      const newId=nid;
+      upd(elevIdx,el=>({...el,pins:[...el.pins,clone]}));
+      setNid(n=>n+1);
+      setDupFromId(null);
+      setModal(clone);
+      showToast('⎘ Duplicated as pin #'+newId+' — add new survey photos');
+      pushUndo(()=>{
+        upd(elevIdx,el=>({...el,pins:el.pins.filter(pi=>pi.id!==newId)}));
+        showToast('↶ Undid duplicate #'+newId);
+      });
+      return;
+    }
+
+    if(m==='pin'&&canPin){
+      const p={id:nid,x:coords.x,y:coords.y,repairName:'',repairType:'linear',measurements:{},comment:'',hazard:'yellow',status:ST.TOREPAIR,approval:'pending',createdBy:user.name,surveyPhotos:[],fixingPhotos:[],donePhotos:[]};
+      const elevIdx=ae;
+      const newId=nid;
+      upd(elevIdx,el=>({...el,pins:[...el.pins,p]}));setNid(n=>n+1);setModal(p);
+      pushUndo(()=>{
+        upd(elevIdx,el=>({...el,pins:el.pins.filter(pi=>pi.id!==newId)}));
+        showToast('↶ Undid pin #'+newId);
+      });
+    }else if(m==='move-pin'&&mv){
+      const prevPin=el?.pins.find(p=>p.id===mv);
+      const prevPos=prevPin?{x:prevPin.x,y:prevPin.y}:null;
+      const elevIdx=ae;const movedId=mv;
+      upd(elevIdx,el=>({...el,pins:el.pins.map(p=>p.id===movedId?{...p,...coords}:p)}));
+      setMovId(null);
+      showToast('✓ Pin #'+movedId+' repositioned');
+      if(prevPos){
+        pushUndo(()=>{
+          upd(elevIdx,el=>({...el,pins:el.pins.map(p=>p.id===movedId?{...p,...prevPos}:p)}));
+          showToast('↶ Undid move of pin #'+movedId);
+        });
+      }
+    }
+  };
+
+  const onWheel=e=>{e.preventDefault();setZoom(z=>Math.min(8,Math.max(0.3,z*(e.deltaY>0?0.85:1.18))));};
+  const mouseDragRef=useRef({dragging:false,sx:0,sy:0,spx:0,spy:0});
+  const onMouseDown=e=>{if(modeRef.current!=='pan'||isMobile)return;mouseDragRef.current={dragging:true,sx:e.clientX,sy:e.clientY,spx:pan_.x,spy:pan_.y};};
+  const onMouseMove=e=>{if(!mouseDragRef.current.dragging)return;const d=mouseDragRef.current;setPan({x:d.spx+(e.clientX-d.sx),y:d.spy+(e.clientY-d.sy)});};
+  const onMouseUp=()=>{mouseDragRef.current.dragging=false;};
+  const onCanvasClick=e=>{
+    if(mouseDragRef.current.sx!==undefined){const moved=Math.abs(e.clientX-mouseDragRef.current.sx)>3||Math.abs(e.clientY-mouseDragRef.current.sy)>3;if(moved){mouseDragRef.current.sx=undefined;return;}}
+    const coords=clickCoords(e);if(coords)placeOrHandleCoords(coords);
+  };
+
+  // Keyboard shortcuts (desktop only — skip when typing in inputs or when any modal is open)
+  useEffect(()=>{
+    if(isMobile)return;
+    const handler=e=>{
+      const tag=(e.target.tagName||'').toLowerCase();
+      if(tag==='input'||tag==='textarea'||tag==='select'||e.target.isContentEditable)return;
+      if(modal||showT||showTrash||showReview||showRole||showMore||showIndex)return;
+      // Ctrl+Z / Cmd+Z = undo
+      if((e.ctrlKey||e.metaKey)&&!e.shiftKey&&e.key.toLowerCase()==='z'){e.preventDefault();undo();return;}
+      // Single-letter shortcuts
+      if(e.ctrlKey||e.metaKey||e.altKey)return;
+      const k=e.key.toLowerCase();
+      if(k==='p'&&canPin){e.preventDefault();setMode('pin');setMovId(null);}
+      else if(k==='m'&&canEdit){e.preventDefault();setMode('move-pin');}
+      else if(k==='d'&&canEdit){e.preventDefault();setMode('delete-pin');setMovId(null);}
+      else if(k==='v'||k==='h'){e.preventDefault();setMode('pan');setMovId(null);}
+      else if(k==='escape'){e.preventDefault();setMode('pan');setMovId(null);setSelPin(null);setDupFromId(null);}
+      else if(k==='s'){e.preventDefault();setShowReview(true);}
+      else if(k==='r'){e.preventDefault();setZoom(1);setPan({x:0,y:0});}
+    };
+    window.addEventListener('keydown',handler);
+    return()=>window.removeEventListener('keydown',handler);
+  },[isMobile,canPin,canEdit,modal,showT,showTrash,showReview,showRole,showMore,showIndex]);
+
+  // Touch handlers
+  useEffect(()=>{
+    const c=cRef.current;if(!c)return;
+    const g=gestureRef.current;
+    const dist=(t1,t2)=>{const dx=t1.clientX-t2.clientX,dy=t1.clientY-t2.clientY;return Math.sqrt(dx*dx+dy*dy);};
+    const mid=(t1,t2)=>({x:(t1.clientX+t2.clientX)/2,y:(t1.clientY+t2.clientY)/2});
+
+    const ts=e=>{
+      if(e.touches.length===1){const t=e.touches[0];g.panning=(modeRef.current==='pan');g.pinching=false;g.tapCandidate=true;g.moved=false;g.startX=t.clientX;g.startY=t.clientY;g.startPanX=pan_.x;g.startPanY=pan_.y;g.tapPos={cx:t.clientX,cy:t.clientY};}
+      else if(e.touches.length===2){e.preventDefault();g.panning=false;g.pinching=true;g.tapCandidate=false;g.startDist=dist(e.touches[0],e.touches[1]);g.startZoom=zoom;const m=mid(e.touches[0],e.touches[1]);g.startMidX=m.x;g.startMidY=m.y;g.startPanX=pan_.x;g.startPanY=pan_.y;}
+    };
+    const tm=e=>{
+      if(g.pinching&&e.touches.length>=2){e.preventDefault();const d=dist(e.touches[0],e.touches[1]);const ratio=d/g.startDist;const newZoom=Math.min(8,Math.max(0.3,g.startZoom*ratio));setZoom(newZoom);const m=mid(e.touches[0],e.touches[1]);setPan({x:g.startPanX+(m.x-g.startMidX),y:g.startPanY+(m.y-g.startMidY)});}
+      else if(g.panning&&e.touches.length===1){const t=e.touches[0];const dx=t.clientX-g.startX,dy=t.clientY-g.startY;if(Math.abs(dx)>5||Math.abs(dy)>5){g.moved=true;g.tapCandidate=false;e.preventDefault();setPan({x:g.startPanX+dx,y:g.startPanY+dy});}}
+    };
+    const te=e=>{
+      if(g.tapCandidate&&!g.moved&&g.tapPos){const coords=tapCoordsFromClient(g.tapPos.cx,g.tapPos.cy);if(coords)placeOrHandleCoords(coords);}
+      if(e.touches.length===0){g.panning=false;g.pinching=false;g.tapCandidate=false;g.moved=false;g.tapPos=null;}
+      else if(e.touches.length===1&&g.pinching){g.pinching=false;g.panning=(modeRef.current==='pan');g.startX=e.touches[0].clientX;g.startY=e.touches[0].clientY;g.startPanX=pan_.x;g.startPanY=pan_.y;g.tapCandidate=false;}
+    };
+
+    c.addEventListener('touchstart',ts,{passive:false});c.addEventListener('touchmove',tm,{passive:false});c.addEventListener('touchend',te,{passive:false});c.addEventListener('touchcancel',te,{passive:false});
+    return()=>{c.removeEventListener('touchstart',ts);c.removeEventListener('touchmove',tm);c.removeEventListener('touchend',te);c.removeEventListener('touchcancel',te);};
+  },[mode,pan_.x,pan_.y,zoom,el?.img,nid,movId,ae]);
+
+  const onPin=id=>{
+    // If in duplicate mode, tapping a pin places clone right on top of that pin's position
+    if(dupFromId!==null){
+      const targetPin=el?.pins.find(p=>p.id===id);
+      if(targetPin){placeOrHandleCoords({x:targetPin.x+3,y:targetPin.y});}
+      return;
+    }
+    if(mode==='move-pin'){
+      if(!movId){setMovId(id);showToast('Tap where to place pin #'+id);}
+      else{setMovId(id);showToast('Now moving pin #'+id);}
+      return;
+    }
+    if(mode==='delete-pin'){
+      const pin=el.pins.find(p=>p.id===id);const name=pin?pin.repairName||('Pin #'+id):'Pin #'+id;
+      if(!confirm('Move "'+name+'" to trash?'))return;
+      const elevIdx=ae;const pinCopy={...pin};
+      upd(elevIdx,el=>({...el,pins:el.pins.filter(p=>p.id!==id),trash:[...(el.trash||[]),{...pinCopy,deletedAt:new Date().toISOString()}]}));
+      setMode('pan');showToast('🗑 Pin #'+id+' moved to trash');
+      pushUndo(()=>{
+        upd(elevIdx,el=>({...el,pins:[...el.pins,pinCopy],trash:(el.trash||[]).filter(t=>t.id!==id)}));
+        showToast('↶ Restored pin #'+id);
+      });
+      return;
+    }
+    setSelPin(id);const p=el.pins.find(p=>p.id===id);if(p)setModal({...p});
+  };
+  const savePin=u=>{upd(ae,el=>({...el,pins:el.pins.map(p=>p.id===u.id?u:p)}));setModal(null);setSelPin(null);};
+  const duplicatePin=id=>{
+    setModal(null);setSelPin(null);
+    setDupFromId(id);
+    setMode('pan');setMovId(null);
+    showToast('⎘ Tap on the canvas to place a copy of pin #'+id);
+  };
+  const trashPin=id=>{
+    const pin=el.pins.find(p=>p.id===id);if(!pin)return;
+    const elevIdx=ae;const pinCopy={...pin};
+    upd(elevIdx,el=>({...el,pins:el.pins.filter(p=>p.id!==id),trash:[...(el.trash||[]),{...pinCopy,deletedAt:new Date().toISOString()}]}));
+    setModal(null);setSelPin(null);showToast('🗑 Pin #'+id+' moved to trash');
+    pushUndo(()=>{
+      upd(elevIdx,el=>({...el,pins:[...el.pins,pinCopy],trash:(el.trash||[]).filter(t=>t.id!==id)}));
+      showToast('↶ Restored pin #'+id);
+    });
+  };
+  const restorePin=(elevIdx,pinId)=>{upd(elevIdx,el=>{const pin=(el.trash||[]).find(p=>p.id===pinId);if(!pin)return el;const{deletedAt,...r}=pin;return{...el,pins:[...el.pins,r],trash:(el.trash||[]).filter(p=>p.id!==pinId)};});showToast('✓ Pin restored');};
+  const addRT=r=>{const nl=rl.find(x=>x.name===r.name)?rl:[...rl,r];setRl(nl);setProject(p=>{const np={...p,repairList:nl};persist(np);return np;});};
+
+  // Approval — single setProject pass instead of looping with multiple upd() calls
+  const updateApproval=(pinId,patch,msg)=>{
+    setProject(p=>{
+      const np={...p,elevations:p.elevations.map(el=>({
+        ...el,
+        pins:el.pins.map(pi=>pi.id===pinId?{...pi,...patch}:pi)
+      }))};
+      persist(np);
+      return np;
+    });
+    showToast(msg);
+  };
+  const approvePin=pinId=>updateApproval(pinId,{approval:'approved'},'✓ Pin #'+pinId+' approved');
+  const declinePin=(pinId,comment)=>updateApproval(pinId,{approval:'declined',approvalComment:comment||''},'✗ Pin #'+pinId+' declined');
+
+  if(screen==='home')return<HomeScreen onOpen={openProject} onCreate={()=>setScreen('setup')} user={user} onRoleSwitch={switchRole} onSwitchUser={switchUser} onLogout={logout}/>;
+  if(screen==='setup')return<Setup onDone={createProject} onBack={()=>setScreen('home')}/>;
+
+  const pins=el?.pins||[];
+  const trashCount=project.elevations.reduce((s,e)=>s+(e.trash||[]).length,0);
+  const iW=imgDims.w,iH=imgDims.h;
+  const total=project.elevations.reduce((s,e)=>s+(e.pins||[]).length,0);
+  const hint=isClient?'👁 View only':(dupFromId!==null?'⎘ Tap on the canvas to place a copy of pin #'+dupFromId:(mode==='pin'?(isMobile?'📍 Tap to place a pin':'📍 Click to place a pin'):mode==='move-pin'?(movId?'Moving #'+movId+' — tap destination':'Tap a pin to select it'):mode==='delete-pin'?'🗑 Tap a pin to trash it':(isMobile?'✋ Drag to pan · pinch to zoom':'✋ Drag to pan · scroll to zoom')));
+
+  const modes=canEdit?[
+    {id:'pan',i:'✋',l:'Pan / View'},
+    {id:'pin',i:'📍',l:'Add Pin'},
+    {id:'move-pin',i:'↔',l:'Move Pin'},
+    {id:'delete-pin',i:'🗑',l:'Delete Pin',danger:true}
+  ]:[{id:'pan',i:'✋',l:'Pan / View'}];
+
+  const statusCounts={[ST.TOREPAIR]:pins.filter(p=>p.status===ST.TOREPAIR).length,[ST.FIXING]:pins.filter(p=>p.status===ST.FIXING).length,[ST.DONE]:pins.filter(p=>p.status===ST.DONE).length};
+
+  // ─── MOBILE LAYOUT ─────────────────────────────────────────────────────────
+  if(isMobile){
+    return(
+      <div style={{display:'flex',flexDirection:'column',height:'100%',background:C.bg,overflow:'hidden',userSelect:'none'}}>
+        <div style={{background:C.navyDark,padding:'0 12px',height:48,display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
+          <button onClick={()=>setScreen('home')} style={{background:'none',border:'1px solid #1e3a5f',borderRadius:6,color:'#94a3b8',fontSize:16,cursor:'pointer',padding:'6px 10px',minWidth:40,minHeight:36}}>⌂</button>
+          <div style={{flex:1,textAlign:'center',minWidth:0,padding:'0 10px'}}>
+            <div style={{fontSize:14,fontWeight:700,color:'#f1f5f9',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontFamily:'Barlow Condensed',letterSpacing:0.5}}>{project.name}</div>
+            <div style={{fontSize:9,color:'#475569',fontFamily:'DM Mono'}}>{user.name} · <span style={{color:user.role==='client'?'#fbbf24':'#93c5fd'}}>{user.role.toUpperCase()}</span></div>
+          </div>
+          <button onClick={()=>setShowIndex(true)} disabled={pins.length===0} style={{background:pins.length?C.blueDim:'transparent',border:'1px solid '+(pins.length?'#1e3a5f':'#1e3a5f44'),borderRadius:6,color:pins.length?'#93c5fd':'#334155',fontSize:11,cursor:'pointer',padding:'6px 10px',minWidth:40,minHeight:36,fontFamily:'Barlow Condensed',fontWeight:700}}>≡ {pins.length||''}</button>
+        </div>
+
+        <div style={{display:'flex',background:C.card,borderBottom:'1px solid '+C.border,overflowX:'auto',flexShrink:0}}>
+          {project.elevations.map((e,i)=>{
+            const ep=e.pins||[];const ed=ep.filter(p=>p.status===ST.DONE).length;
+            return(
+              <button key={i} onClick={()=>{setAe(i);setMode("pan");setMovId(null);setDupFromId(null);setSelPin(null);setZoom(1);setPan({x:0,y:0});}}
+                style={{padding:'10px 14px',border:'none',borderBottom:'3px solid '+(i===ae?C.navyDark:'transparent'),background:'transparent',color:i===ae?C.navyDark:C.textDim,fontSize:13,fontWeight:i===ae?700:400,cursor:'pointer',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:6,fontFamily:'Barlow Condensed',minHeight:44}}>
+                {e.name.toUpperCase()}
+                {ep.length>0&&<span style={{fontSize:10,color:i===ae?C.navyMid:C.textMuted,background:i===ae?C.blueDim:'#f3f4f6',padding:'1px 6px',borderRadius:8,fontFamily:'DM Mono'}}>{ed}/{ep.length}</span>}
+              </button>
+            );
+          })}
+        </div>
+
+        <div ref={cRef} style={{flex:1,position:'relative',overflow:'hidden',background:'#d8dce4',touchAction:'none'}} onClick={!isMobile?onCanvasClick:undefined}>
+          {!el?.img?(
+            <>
+              <div style={{position:'absolute',inset:0,backgroundImage:'linear-gradient('+C.border+' 1px,transparent 1px),linear-gradient(90deg,'+C.border+' 1px,transparent 1px)',backgroundSize:'32px 32px',pointerEvents:'none',opacity:0.8}}/>
+              <div style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,pointerEvents:'none',padding:20,textAlign:'center'}}>
+                <div style={{fontSize:48,opacity:0.15}}>🏢</div>
+                <div style={{fontSize:11,color:C.textMuted,fontFamily:'Barlow Condensed',letterSpacing:1}}>NO PHOTO — TAP ⋯ TO LOAD ONE</div>
+              </div>
+              {pins.map(p=><Marker key={p.id} pin={p} selected={selPin===p.id} isMoving={movId===p.id} isDeleting={mode==='delete-pin'} onClick={onPin} x={p.x*csz.w/100} y={p.y*csz.h/100} currentUser={user.name}/>)}
+            </>
+          ):(
+            <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center'}}>
+              <div style={{transform:'translate('+pan_.x+'px,'+pan_.y+'px) scale('+zoom+')',transformOrigin:'center center',position:'relative',display:'inline-block',willChange:'transform'}}>
+                <img ref={iRef} src={el.img} alt="" style={{display:'block',maxWidth:'100vw',maxHeight:'calc(100vh - 200px)',objectFit:'contain',pointerEvents:'none'}} draggable={false}/>
+                <div style={{position:'absolute',inset:0}}>
+                  {pins.map(p=><Marker key={p.id} pin={p} selected={selPin===p.id} isMoving={movId===p.id} isDeleting={mode==='delete-pin'} onClick={onPin} x={p.x*iW/100} y={p.y*iH/100} currentUser={user.name}/>)}
+                </div>
+              </div>
+            </div>
+          )}
+          <div style={{position:'absolute',top:10,left:'50%',transform:'translateX(-50%)',background:'rgba(17,24,39,0.88)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:14,padding:'4px 12px',fontSize:10,color:mode==='pin'||mode==='move-pin'?'#93c5fd':mode==='delete-pin'?'#fca5a5':'#94a3b8',pointerEvents:'none',fontFamily:'Barlow Condensed',letterSpacing:0.3,whiteSpace:'nowrap',maxWidth:'90vw',overflow:'hidden',textOverflow:'ellipsis'}}>{hint}</div>
+        </div>
+
+        <div style={{background:C.navyDark,borderTop:'1px solid #1e3a5f',display:'flex',alignItems:'stretch',flexShrink:0,height:58,paddingBottom:'env(safe-area-inset-bottom)'}}>
+          {modes.map(m=>{const active=mode===m.id;const danger=m.danger;const col=active?(danger?'#fca5a5':'#93c5fd'):(danger?'#64748b':'#94a3b8');return(
+            <button key={m.id} onClick={()=>{setMode(m.id);setDupFromId(null);if(m.id!=='move-pin')setMovId(null);}}
+              style={{flex:1,background:active?(danger?'rgba(220,38,38,0.15)':'rgba(37,99,235,0.18)'):'transparent',border:'none',borderTop:'2px solid '+(active?(danger?'#dc2626':C.blue):'transparent'),color:col,cursor:'pointer',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:2,fontFamily:'Barlow Condensed',padding:'4px 2px'}}>
+              <span style={{fontSize:18,lineHeight:1}}>{m.i}</span>
+              <span style={{fontSize:9,fontWeight:700,letterSpacing:0.5}}>{m.l.split(' ')[0].toUpperCase()}</span>
+            </button>
+          );})}
+          <div style={{width:1,background:'#1e3a5f',margin:'8px 0'}}/>
+          <button onClick={()=>setZoom(z=>Math.min(8,z*1.3))} style={{flex:0.7,background:'transparent',border:'none',color:'#94a3b8',cursor:'pointer',fontSize:20,fontWeight:700}}>+</button>
+          <button onClick={()=>setZoom(z=>Math.max(0.3,z*0.77))} style={{flex:0.7,background:'transparent',border:'none',color:'#94a3b8',cursor:'pointer',fontSize:20,fontWeight:700}}>−</button>
+          <div style={{width:1,background:'#1e3a5f',margin:'8px 0'}}/>
+          <button onClick={()=>setShowMore(true)} style={{flex:0.8,background:'transparent',border:'none',color:'#94a3b8',cursor:'pointer',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:2,fontFamily:'Barlow Condensed'}}>
+            <span style={{fontSize:18,lineHeight:1}}>⋯</span>
+            <span style={{fontSize:9,fontWeight:700,letterSpacing:0.5}}>MORE</span>
+          </button>
+        </div>
+
+        {showMore&&(
+          <div onClick={()=>setShowMore(false)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:260,display:'flex',alignItems:'flex-end'}}>
+            <div onClick={e=>e.stopPropagation()} style={{background:C.card,width:'100%',borderRadius:'16px 16px 0 0',padding:'10px 16px 20px',paddingBottom:'calc(20px + env(safe-area-inset-bottom))',boxShadow:'0 -10px 40px rgba(0,0,0,0.2)',maxHeight:'80vh',overflowY:'auto'}}>
+              <div style={{width:40,height:4,background:C.border,borderRadius:2,margin:'0 auto 14px'}}/>
+              {canEdit&&(
+                <label style={{display:'block',padding:'14px',border:'1px dashed '+C.borderDark,borderRadius:10,color:C.textDim,fontSize:13,cursor:'pointer',textAlign:'center',background:C.surface,marginBottom:10,fontFamily:'Barlow Condensed',fontWeight:600}}>
+                  {el?.img?'🔄 CHANGE ELEVATION PHOTO':'📷 LOAD ELEVATION PHOTO'}
+                  <input type="file" accept="image/*" capture="environment" style={{display:'none'}} onChange={e=>{onPhoto(e);setShowMore(false);}}/>
+                </label>
+              )}
+              <button onClick={()=>{setZoom(1);setPan({x:0,y:0});setShowMore(false);}} style={{width:'100%',padding:'12px',borderRadius:10,border:'1px solid '+C.border,background:C.surface,color:C.textDim,fontSize:13,fontWeight:600,cursor:'pointer',marginBottom:10,fontFamily:'Barlow Condensed'}}>⟲ RESET ZOOM ({Math.round(zoom*100)}%)</button>
+              {pins.length>0&&(
+                <div style={{padding:'12px',background:C.surface,border:'1px solid '+C.border,borderRadius:10,marginBottom:10}}>
+                  <div style={{fontSize:10,color:C.textMuted,letterSpacing:1.5,marginBottom:8,fontFamily:'Barlow Condensed',fontWeight:700}}>THIS ELEVATION</div>
+                  {[ST.TOREPAIR,ST.FIXING,ST.DONE].map(s=>(
+                    <div key={s} style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8}}><div style={{width:8,height:8,borderRadius:'50%',background:SC[s]}}/><span style={{fontSize:12,color:C.textDim,fontFamily:'Barlow Condensed'}}>{SL[s]}</span></div>
+                      <span style={{fontSize:13,color:SC[s],fontFamily:'DM Mono',fontWeight:700}}>{statusCounts[s]}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button onClick={()=>{setShowReview(true);setShowMore(false);}} style={{width:'100%',padding:'13px',borderRadius:10,border:'1px solid #d97706',background:'#fef3c7',color:'#92400e',fontSize:13,fontWeight:700,cursor:'pointer',marginBottom:8,fontFamily:'Barlow Condensed'}}>📋 SURVEY REVIEW</button>
+              {!isClient&&<button onClick={()=>{setShowT(true);setShowMore(false);}} style={{width:'100%',padding:'13px',borderRadius:10,border:'1px solid '+C.blue,background:C.blueDim,color:C.blue,fontSize:13,fontWeight:700,cursor:'pointer',marginBottom:8,fontFamily:'Barlow Condensed'}}>📊 SUMMARY {total>0?'('+total+' PINS)':''}</button>}
+              {canEdit&&<button onClick={()=>{setShowTrash(true);setShowMore(false);}} style={{width:'100%',padding:'13px',borderRadius:10,border:'1px solid '+(trashCount>0?'#dc262630':C.border),background:C.card,color:trashCount>0?'#dc2626aa':C.textMuted,fontSize:13,fontWeight:600,cursor:'pointer',marginBottom:8,fontFamily:'Barlow Condensed'}}>🗑 TRASH {trashCount>0?'('+trashCount+')':''}</button>}
+              <button onClick={()=>{setShowRole(true);setShowMore(false);}} style={{width:'100%',padding:'13px',borderRadius:10,border:'1px solid '+C.border,background:C.card,color:C.textDim,fontSize:13,fontWeight:600,cursor:'pointer',marginBottom:4,fontFamily:'Barlow Condensed'}}>👤 {user.name} · {user.role.toUpperCase()} — Switch Role</button>
+            </div>
+          </div>
+        )}
+
+        {showIndex&&pins.length>0&&(
+          <div onClick={()=>setShowIndex(false)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:260,display:'flex',justifyContent:'flex-end'}}>
+            <div onClick={e=>e.stopPropagation()} style={{background:C.card,width:'82%',maxWidth:340,height:'100%',display:'flex',flexDirection:'column',boxShadow:'-10px 0 40px rgba(0,0,0,0.2)'}}>
+              <div style={{padding:'14px 18px',background:C.navyDark,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <span style={{fontSize:13,color:'#f1f5f9',fontFamily:'Barlow Condensed',fontWeight:700,letterSpacing:1.5}}>PIN INDEX · {pins.length}</span>
+                <button onClick={()=>setShowIndex(false)} style={{background:'none',border:'none',color:'#64748b',fontSize:24,cursor:'pointer',padding:'0 6px',minWidth:36,minHeight:36}}>×</button>
+              </div>
+              <div style={{padding:'10px 14px',background:C.surface,borderBottom:'1px solid '+C.border}}>
+                <input value={indexSearch} onChange={e=>setIndexSearch(e.target.value)} placeholder="🔍 Search name, type, status..."
+                  style={{...IS,padding:'8px 10px',fontSize:12}}/>
+              </div>
+              <div style={{flex:1,overflowY:'auto'}}>
+                {(()=>{
+                  const q=indexSearch.trim().toLowerCase();
+                  const filtered=q?pins.filter(p=>{
+                    const name=(p.repairName||'').toLowerCase();
+                    const type=(RT.find(r=>r.id===p.repairType)||{label:''}).label.toLowerCase();
+                    const status=(p.approval==='declined'?'declined':(SL[p.status]||'')).toLowerCase();
+                    const hazard=(HAZARDS.find(h=>h.id===p.hazard)||{label:''}).label.toLowerCase();
+                    const by=(p.createdBy||'').toLowerCase();
+                    return name.includes(q)||type.includes(q)||status.includes(q)||hazard.includes(q)||by.includes(q)||String(p.id).includes(q);
+                  }):pins;
+                  if(filtered.length===0)return<div style={{padding:'24px',textAlign:'center',color:C.textMuted,fontSize:12}}>No pins match "{indexSearch}"</div>;
+                  return filtered.map(p=>{const isDecl=p.approval==='declined';const sc=isDecl?C.declined:(SC[p.status]||C.textMuted);return(
+                    <div key={p.id} onClick={()=>{if(mode!=='delete-pin'){onPin(p.id);setShowIndex(false);}}} style={{padding:'14px 18px',borderBottom:'1px solid '+C.border,cursor:'pointer',background:isDecl?'#fef2f2':(selPin===p.id?C.blueDim:C.card)}}>
+                      <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:4}}>
+                        <div style={{background:pCol(p,user.name),borderRadius:'50%',width:26,height:26,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700,color:'#fff',flexShrink:0,fontFamily:'DM Mono'}}>{p.id}</div>
+                        <span style={{fontSize:14,fontWeight:600,color:isDecl?C.declined:C.navyDark,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1,fontFamily:'Barlow Condensed'}}>{p.repairName||'Unnamed'}</span>
+                      </div>
+                      <div style={{paddingLeft:36,display:'flex',gap:6,alignItems:'center'}}>
+                        <div style={{width:7,height:7,borderRadius:'50%',background:sc,flexShrink:0}}/>
+                        <span style={{fontSize:10,fontWeight:700,color:sc,fontFamily:'Barlow Condensed'}}>{isDecl?'Declined':(SL[p.status]||'new')}</span>
+                        <span style={{fontSize:10,color:C.textMuted,fontFamily:'DM Mono'}}>· {getMeas(p)}</span>
+                        {p.createdBy&&p.createdBy!==user.name&&<span style={{fontSize:9,color:C.textMuted,marginLeft:'auto'}}>by {p.createdBy}</span>}
+                      </div>
+                    </div>
+                  );});
+                })()}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {modal&&<PinModal key={modal.id+"-"+(modal._justDuplicated?"d":"s")} pin={modal} repairList={rl} onSave={savePin} onTrash={trashPin} onDuplicate={duplicatePin} onClose={()=>{setModal(null);setSelPin(null);}} onAddRT={addRT} isMobile={isMobile} user={user}/>}
+        {showT&&<SummaryTable project={project} onClose={()=>setShowT(false)} user={user}/>}
+        {showTrash&&<TrashPanel project={project} onRestore={restorePin} onClose={()=>setShowTrash(false)}/>}
+        {showReview&&<SurveyReview project={project} user={user} onApprove={approvePin} onDecline={declinePin} onClose={()=>setShowReview(false)}/>}
+        {showRole&&<RoleSwitcher user={user} onSwitch={r=>{switchRole(r);setShowRole(false);}} onSwitchUser={u=>{switchUser(u);setShowRole(false);}} onLogout={logout} onClose={()=>setShowRole(false)}/>}
+        {!isOnline&&<div style={{position:"fixed",top:"calc(env(safe-area-inset-top) + 4px)",left:"50%",transform:"translateX(-50%)",background:"#dc2626",color:"#fff",fontSize:10,fontWeight:700,padding:"3px 10px",borderRadius:12,zIndex:600,fontFamily:"Barlow Condensed",letterSpacing:1,boxShadow:"0 2px 8px rgba(0,0,0,0.25)"}}>⚠ OFFLINE — saving locally</div>}{toast&&<Toast msg={toast}/>}
+      </div>
+    );
+  }
+
+  // ─── DESKTOP LAYOUT ────────────────────────────────────────────────────────
+  return(
+    <div style={{display:'flex',height:'100%',background:C.bg,overflow:'hidden',userSelect:'none'}}>
+      <div style={{width:200,background:C.surface,borderRight:'1px solid '+C.border,display:'flex',flexDirection:'column',flexShrink:0}}>
+        <div style={{background:C.navyDark,padding:'0 14px',height:56,display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
+          <div style={{minWidth:0}}>
+            <div style={{fontSize:9,color:'#475569',letterSpacing:2.5,fontFamily:'Barlow Condensed',fontWeight:700}}>QUICK SURVEY</div>
+            <div style={{fontSize:11,fontWeight:700,color:'#f1f5f9',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontFamily:'Barlow Condensed'}}>{project.name}</div>
+          </div>
+          <button onClick={()=>setScreen('home')} style={{background:'none',border:'1px solid #1e3a5f',borderRadius:5,color:'#475569',fontSize:11,cursor:'pointer',padding:'3px 7px',flexShrink:0,marginLeft:6}}>⌂</button>
+        </div>
+        {canEdit&&(
+          <div style={{padding:'8px 12px',borderBottom:'1px solid '+C.border}}>
+            <label style={{display:'block',padding:'8px 10px',border:'1px dashed '+C.borderDark,borderRadius:7,color:C.textDim,fontSize:11,cursor:'pointer',textAlign:'center',background:C.card}}>
+              {el?.img?'🔄 Change photo':'📷 Load photo'}
+              <input type="file" accept="image/*" capture="environment" style={{display:'none'}} onChange={onPhoto}/>
+            </label>
+          </div>
+        )}
+        <div style={{padding:'8px 12px',borderBottom:'1px solid '+C.border}}>
+          <div style={{fontSize:9,color:C.textMuted,letterSpacing:1.5,marginBottom:6,fontFamily:'Barlow Condensed',fontWeight:700}}>MODE</div>
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            {modes.map(m=>{const active=mode===m.id;const danger=m.danger;return(
+              <button key={m.id} onClick={()=>{setMode(m.id);setDupFromId(null);if(m.id!=='move-pin')setMovId(null);}}
+                style={{padding:'6px 10px',borderRadius:6,border:'1px solid '+(active?(danger?'#dc2626':C.blue):C.border),background:active?(danger?'#dc262614':C.blueDim):C.card,color:active?(danger?'#dc2626':C.blue):(danger?'#9ca3af':C.textDim),fontSize:12,fontWeight:active?700:400,cursor:'pointer',textAlign:'left',fontFamily:'Barlow Condensed'}}>
+                {m.i} {m.l}
+              </button>
+            );})}
+          </div>
+        </div>
+        <div style={{padding:'8px 12px',borderBottom:'1px solid '+C.border}}>
+          <div style={{fontSize:9,color:C.textMuted,letterSpacing:1.5,marginBottom:6,fontFamily:'Barlow Condensed',fontWeight:700}}>ZOOM {Math.round(zoom*100)}%</div>
+          <div style={{display:'flex',gap:4}}>
+            <button onClick={()=>setZoom(z=>Math.min(8,z*1.3))} style={{flex:1,padding:'5px',borderRadius:5,border:'1px solid '+C.border,background:C.card,color:C.textDim,fontSize:15,cursor:'pointer'}}>+</button>
+            <button onClick={()=>{setZoom(1);setPan({x:0,y:0});}} style={{flex:1,padding:'5px',borderRadius:5,border:'1px solid '+C.border,background:C.card,color:C.textMuted,fontSize:9,cursor:'pointer',fontFamily:'Barlow Condensed'}}>RESET</button>
+            <button onClick={()=>setZoom(z=>Math.max(0.3,z*0.77))} style={{flex:1,padding:'5px',borderRadius:5,border:'1px solid '+C.border,background:C.card,color:C.textDim,fontSize:15,cursor:'pointer'}}>−</button>
+          </div>
+        </div>
+        {pins.length>0&&(
+          <div style={{padding:'8px 12px',borderBottom:'1px solid '+C.border}}>
+            <div style={{fontSize:9,color:C.textMuted,letterSpacing:1.5,marginBottom:7,fontFamily:'Barlow Condensed',fontWeight:700}}>THIS ELEVATION</div>
+            {[ST.TOREPAIR,ST.FIXING,ST.DONE].map(s=>(
+              <div key={s} style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+                <div style={{display:'flex',alignItems:'center',gap:5}}><div style={{width:6,height:6,borderRadius:'50%',background:SC[s]}}/><span style={{fontSize:10,color:C.textDim,fontFamily:'Barlow Condensed'}}>{SL[s]}</span></div>
+                <span style={{fontSize:10,color:SC[s],fontFamily:'DM Mono',fontWeight:600}}>{statusCounts[s]}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{padding:'8px 12px',borderBottom:'1px solid '+C.border}}>
+          <button onClick={()=>setShowRole(true)} style={{width:'100%',padding:'6px 10px',borderRadius:6,border:'1px solid '+C.border,background:C.card,color:C.textDim,fontSize:11,cursor:'pointer',fontFamily:'Barlow Condensed',textAlign:'left'}}>
+            👤 {user.name} · <span style={{color:user.role==='client'?'#d97706':C.blue,fontWeight:700}}>{user.role.toUpperCase()}</span>
+          </button>
+        </div>
+        <div style={{flex:1}}/>
+        <div style={{padding:'10px 12px',display:'flex',flexDirection:'column',gap:6,borderTop:'1px solid '+C.border}}>
+          <button onClick={()=>setShowReview(true)} style={{width:'100%',padding:'7px',borderRadius:7,border:'1px solid #d97706',background:'#fef3c7',color:'#92400e',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'Barlow Condensed'}}>📋 SURVEY REVIEW</button>
+          {!isClient&&<button onClick={()=>setShowT(true)} style={{width:'100%',padding:'8px',borderRadius:7,border:'1px solid '+C.blue,background:C.blueDim,color:C.blue,fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'Barlow Condensed'}}>📊 SUMMARY {total>0?'('+total+')':''}</button>}
+          {canEdit&&<button onClick={()=>setShowTrash(true)} style={{width:'100%',padding:'7px',borderRadius:7,border:'1px solid '+(trashCount>0?'#dc262630':C.border),background:C.card,color:trashCount>0?'#dc2626aa':C.textMuted,fontSize:11,cursor:'pointer',fontFamily:'Barlow Condensed'}}>🗑 TRASH {trashCount>0?'('+trashCount+')':''}</button>}
+        </div>
+      </div>
+
+      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+        <div style={{display:'flex',background:C.card,borderBottom:'1px solid '+C.border,overflowX:'auto',flexShrink:0}}>
+          {project.elevations.map((e,i)=>{
+            const ep=e.pins||[];const ed=ep.filter(p=>p.status===ST.DONE).length;
+            return(
+              <button key={i} onClick={()=>{setAe(i);setMode("pan");setMovId(null);setDupFromId(null);setSelPin(null);setZoom(1);setPan({x:0,y:0});}}
+                style={{padding:'10px 16px',border:'none',borderBottom:'2px solid '+(i===ae?C.navyDark:'transparent'),background:'transparent',color:i===ae?C.navyDark:C.textDim,fontSize:12,fontWeight:i===ae?700:400,cursor:'pointer',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:6,fontFamily:'Barlow Condensed',transition:'all 0.1s'}}>
+                {e.name.toUpperCase()}
+                {ep.length>0&&<span style={{fontSize:9,color:i===ae?C.navyMid:C.textMuted,background:i===ae?C.blueDim:'#f3f4f6',padding:'1px 6px',borderRadius:8,fontFamily:'DM Mono'}}>{ed}/{ep.length}</span>}
+                {e.img&&<span style={{fontSize:8,color:'#16a34a',background:'#dcfce7',padding:'1px 4px',borderRadius:4}}>IMG</span>}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{flex:1,position:'relative',overflow:'hidden',cursor:mode==='pin'||mode==='move-pin'?'crosshair':mode==='delete-pin'?'not-allowed':'grab',background:'#d8dce4'}}
+          ref={cRef} onWheel={onWheel} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onClick={onCanvasClick}>
+          {!el?.img?(
+            <>
+              <div style={{position:'absolute',inset:0,backgroundImage:'linear-gradient('+C.border+' 1px,transparent 1px),linear-gradient(90deg,'+C.border+' 1px,transparent 1px)',backgroundSize:'32px 32px',pointerEvents:'none',opacity:0.8}}/>
+              <div style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,pointerEvents:'none'}}>
+                <div style={{fontSize:48,opacity:0.1}}>🏢</div>
+                <div style={{fontSize:11,color:C.textMuted,fontFamily:'Barlow Condensed',letterSpacing:1}}>NO PHOTO — PINS FLOAT ON CANVAS</div>
+              </div>
+              {pins.map(p=><Marker key={p.id} pin={p} selected={selPin===p.id} isMoving={movId===p.id} isDeleting={mode==='delete-pin'} onClick={onPin} x={p.x*csz.w/100} y={p.y*csz.h/100} currentUser={user.name}/>)}
+            </>
+          ):(
+            <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center'}}>
+              <div style={{transform:'translate('+pan_.x+'px,'+pan_.y+'px) scale('+zoom+')',transformOrigin:'center center',position:'relative',display:'inline-block'}}>
+                <img ref={iRef} src={el.img} alt="" style={{display:'block',maxWidth:'72vw',maxHeight:'88vh',objectFit:'contain',pointerEvents:'none'}} draggable={false}/>
+                <div style={{position:'absolute',inset:0}}>
+                  {pins.map(p=><Marker key={p.id} pin={p} selected={selPin===p.id} isMoving={movId===p.id} isDeleting={mode==='delete-pin'} onClick={onPin} x={p.x*iW/100} y={p.y*iH/100} currentUser={user.name}/>)}
+                </div>
+              </div>
+            </div>
+          )}
+          <div style={{position:'absolute',bottom:12,left:'50%',transform:'translateX(-50%)',background:'rgba(17,24,39,0.88)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:20,padding:'5px 16px',fontSize:11,color:mode==='pin'||mode==='move-pin'?'#93c5fd':mode==='delete-pin'?'#fca5a5':'#94a3b8',pointerEvents:'none',fontFamily:'Barlow Condensed',letterSpacing:0.5}}>{hint}</div>
+          <div style={{position:'absolute',top:12,left:12,background:'rgba(17,24,39,0.88)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:7,padding:'4px 12px',fontSize:10,color:'#93c5fd',fontWeight:700,letterSpacing:2,pointerEvents:'none',fontFamily:'Barlow Condensed'}}>{(el?.name||'').toUpperCase()} · {project.name.toUpperCase()}</div>
+        </div>
+      </div>
+
+      {pins.length>0&&(
+        <div style={{width:196,background:C.surface,borderLeft:'1px solid '+C.border,display:'flex',flexDirection:'column',flexShrink:0}}>
+          <div style={{padding:'10px 14px',borderBottom:'1px solid '+C.border,display:'flex',justifyContent:'space-between',alignItems:'center',background:C.navyDark}}>
+            <span style={{fontSize:9,color:'#475569',letterSpacing:2,fontFamily:'Barlow Condensed',fontWeight:700}}>INDEX</span>
+            <span style={{fontSize:9,color:'#475569',fontFamily:'DM Mono'}}>{pins.length}</span>
+          </div>
+          <div style={{padding:'6px 8px',background:C.card,borderBottom:'1px solid '+C.border}}>
+            <input value={indexSearch} onChange={e=>setIndexSearch(e.target.value)} placeholder="🔍 Search..."
+              style={{...IS,padding:'5px 8px',fontSize:11}}/>
+          </div>
+          <div style={{flex:1,overflowY:'auto'}}>
+            {(()=>{
+              const q=indexSearch.trim().toLowerCase();
+              const filtered=q?pins.filter(p=>{
+                const name=(p.repairName||'').toLowerCase();
+                const type=(RT.find(r=>r.id===p.repairType)||{label:''}).label.toLowerCase();
+                const status=(p.approval==='declined'?'declined':(SL[p.status]||'')).toLowerCase();
+                const hazard=(HAZARDS.find(h=>h.id===p.hazard)||{label:''}).label.toLowerCase();
+                const by=(p.createdBy||'').toLowerCase();
+                return name.includes(q)||type.includes(q)||status.includes(q)||hazard.includes(q)||by.includes(q)||String(p.id).includes(q);
+              }):pins;
+              if(filtered.length===0)return<div style={{padding:'16px',textAlign:'center',color:C.textMuted,fontSize:11}}>No matches</div>;
+              return filtered.map(p=>{const isDecl=p.approval==='declined';const sc=isDecl?C.declined:(SC[p.status]||C.textMuted);return(
+                <div key={p.id} onClick={()=>{if(mode!=='delete-pin')onPin(p.id);}} style={{padding:'9px 14px',borderBottom:'1px solid '+C.border,cursor:'pointer',background:isDecl?'#fef2f2':(selPin===p.id?C.blueDim:C.card),transition:'background 0.1s'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:3}}>
+                    <div style={{background:pCol(p,user.name),borderRadius:'50%',width:18,height:18,display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:700,color:'#fff',flexShrink:0,fontFamily:'DM Mono'}}>{p.id}</div>
+                    <span style={{fontSize:12,fontWeight:600,color:isDecl?C.declined:C.navyDark,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1,fontFamily:'Barlow Condensed'}}>{p.repairName||'Unnamed'}</span>
+                  </div>
+                  <div style={{paddingLeft:25,display:'flex',gap:5,alignItems:'center'}}>
+                    <div style={{width:6,height:6,borderRadius:'50%',background:sc,flexShrink:0}}/>
+                    <span style={{fontSize:9,fontWeight:700,color:sc,fontFamily:'Barlow Condensed'}}>{isDecl?'Declined':(SL[p.status]||'new')}</span>
+                    {p.hazard&&<span style={{fontSize:9,color:HC[p.hazard],marginLeft:'auto'}}>●</span>}
+                  </div>
+                </div>
+              );});
+            })()}
+          </div>
+        </div>
+      )}
+
+      {modal&&<PinModal key={modal.id+"-"+(modal._justDuplicated?"d":"s")} pin={modal} repairList={rl} onSave={savePin} onTrash={trashPin} onDuplicate={duplicatePin} onClose={()=>{setModal(null);setSelPin(null);}} onAddRT={addRT} isMobile={false} user={user}/>}
+      {showT&&<SummaryTable project={project} onClose={()=>setShowT(false)} user={user}/>}
+      {showTrash&&<TrashPanel project={project} onRestore={restorePin} onClose={()=>setShowTrash(false)}/>}
+      {showReview&&<SurveyReview project={project} user={user} onApprove={approvePin} onDecline={declinePin} onClose={()=>setShowReview(false)}/>}
+      {showRole&&<RoleSwitcher user={user} onSwitch={r=>{switchRole(r);setShowRole(false);}} onSwitchUser={u=>{switchUser(u);setShowRole(false);}} onLogout={logout} onClose={()=>setShowRole(false)}/>}
+      {!isOnline&&<div style={{position:"fixed",top:"calc(env(safe-area-inset-top) + 4px)",left:"50%",transform:"translateX(-50%)",background:"#dc2626",color:"#fff",fontSize:10,fontWeight:700,padding:"3px 10px",borderRadius:12,zIndex:600,fontFamily:"Barlow Condensed",letterSpacing:1,boxShadow:"0 2px 8px rgba(0,0,0,0.25)"}}>⚠ OFFLINE — saving locally</div>}{toast&&<Toast msg={toast}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+
+<script>
+// ── PWA REGISTRATION & INSTALL PROMPT ───────────────────────────────────
+(function(){
+  if (!('serviceWorker' in navigator)) return;
+
+  // Register the service worker
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('service-worker.js')
+      .then(reg => {
+        // Check for updates every time the app becomes visible
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible') reg.update();
+        });
+        // Auto-apply new SW when it's ready
+        reg.addEventListener('updatefound', () => {
+          const nw = reg.installing;
+          if (!nw) return;
+          nw.addEventListener('statechange', () => {
+            if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+              // New version waiting — tell it to activate and reload
+              nw.postMessage('SKIP_WAITING');
+            }
+          });
+        });
+      })
+      .catch(err => console.warn('SW registration failed:', err));
+
+    // Reload once when the new SW takes control
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloaded) return;
+      reloaded = true;
+      window.location.reload();
+    });
+  });
+
+  // Install prompt — capture and expose via a custom event the app listens to
+  let deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    window.__qsInstallAvailable = true;
+    window.dispatchEvent(new CustomEvent('qs-install-available'));
+  });
+  window.__qsInstallApp = async function() {
+    if (!deferredPrompt) return false;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    window.__qsInstallAvailable = false;
+    window.dispatchEvent(new CustomEvent('qs-install-done', { detail: outcome }));
+    return outcome === 'accepted';
+  };
+
+  // Hide the install button once installed
+  window.addEventListener('appinstalled', () => {
+    deferredPrompt = null;
+    window.__qsInstallAvailable = false;
+    window.dispatchEvent(new CustomEvent('qs-install-done', { detail: 'installed' }));
+  });
+})();
+</script>
+</body>
+</html>
